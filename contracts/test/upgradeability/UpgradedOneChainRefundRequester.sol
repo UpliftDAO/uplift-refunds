@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+pragma solidity 0.8.8;
+
+import "../../refundRequester/OneChainRefundRequester.sol";
+
+contract UpgradedOneChainRefundRequester is OneChainRefundRequester {
+    function test() external pure returns (string memory) {
+        return "Success";
+    }
+}
