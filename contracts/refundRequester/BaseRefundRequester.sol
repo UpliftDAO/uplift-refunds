@@ -13,6 +13,14 @@ import { IBaseRefundRequester } from "../interfaces/IBaseRefundRequester.sol";
 import { IBaseRefundVesting } from "../interfaces/IBaseRefundVesting.sol";
 import { BaseRoleChecker } from "../BaseRoleChecker.sol";
 
+/**
+ * @title Base contract for requesting refunds
+ * @notice Base contract implements function for both one- and multi- chain refund requesters
+ * Based on IDO and vesting info, contract add abitily to request refund for specific vesting
+ * Unique refund identifier - [token][identifier], where:
+ * token - idoToken address
+ * identifier - IDO address for one-chain, zero address otherwise
+ */
 abstract contract BaseRefundRequester is
     IBaseRefundRequester,
     UUPSUpgradeable,
@@ -34,12 +42,20 @@ abstract contract BaseRefundRequester is
 
     constructor() initializer {}
 
+    /**
+     * @notice Initialize function
+     * @param registry_ - holds roles data. Registry smart contract
+     * @param refundInfo_ - info for refund
+     */
     function initialize(
         address registry_,
         InitializeRefundInfo calldata refundInfo_,
         bytes calldata
     ) external virtual;
 
+    /**
+     * @inheritdoc IBaseRefundRequester
+     */
     function setRefundable(
         address token_,
         address identifier_,
@@ -48,10 +64,13 @@ abstract contract BaseRefundRequester is
     ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
         KPI[] storage KPIs = refundInfoOf[token_][identifier_].KPIs;
         require(block.timestamp < KPIs[index_].dateRequestEnd, "BRR:I");
-        KPIs[index_].refundable = isRefundable_;
+        KPIs[index_].isRefundable = isRefundable_;
         emit SetRefundable(token_, identifier_, index_, isRefundable_);
     }
 
+    /**
+     * @inheritdoc IBaseRefundRequester
+     */
     function setProjectFundsHolder(
         address token_,
         address identifier_,
@@ -60,6 +79,9 @@ abstract contract BaseRefundRequester is
         _setProjectFundsHolder(token_, identifier_, projectFundsHolder_);
     }
 
+    /**
+     * @inheritdoc IBaseRefundRequester
+     */
     function setKPI(
         address token_,
         address identifier_,
@@ -69,32 +91,35 @@ abstract contract BaseRefundRequester is
         _setKPI(token_, identifier_, KPIIndex_, KPI_, refundInfoOf[token_][identifier_].bpPrecision);
     }
 
+    /**
+     * @inheritdoc IBaseRefundRequester
+     */
     function requestRefund(
         address token_,
         address identifier_,
-        uint256 refundInToken_, // 0 if only unvested refund
+        uint256 refundInToken_,
         uint8 KPIIndex_,
-        bytes calldata
+        bytes calldata payload_
     ) external override nonReentrant {
         // Check if KPI is valid
         RefundInfo storage refundInfo = refundInfoOf[token_][identifier_];
         KPI storage refundKPI = refundInfo.KPIs[KPIIndex_];
         require(
-            refundKPI.refundable &&
+            refundKPI.isRefundable &&
                 block.timestamp >= refundKPI.dateRequestStart &&
                 block.timestamp <= refundKPI.dateRequestEnd,
             "BRR:I"
         );
 
         // Get account data
-        uint64 percentInBP = refundKPI.isFullRefund ? refundInfo.bpPrecision : refundKPI.percentInBP;
         uint256 refundAmountInToken = _calculateRefundAmountInToken(
             token_,
             identifier_,
             msg.sender,
             refundInToken_,
-            percentInBP,
-            KPIIndex_
+            refundKPI.isFullRefund ? refundInfo.bpPrecision : refundKPI.percentInBP,
+            KPIIndex_,
+            payload_
         );
         require(refundAmountInToken > 0, "BRR:I");
 
@@ -106,7 +131,7 @@ abstract contract BaseRefundRequester is
         }
 
         // Update info
-        _updateRequestRefundInfoForAccount(
+        _updateRequestRefundInfo(
             token_,
             identifier_,
             msg.sender,
@@ -120,6 +145,9 @@ abstract contract BaseRefundRequester is
         emit RequestRefund(token_, identifier_, msg.sender, refundAmountInToken, refundInToken_, KPIIndex_);
     }
 
+    /**
+     * @inheritdoc IBaseRefundRequester
+     */
     function infoOf(
         address token_,
         address identifier_,
@@ -146,6 +174,9 @@ abstract contract BaseRefundRequester is
         }
     }
 
+    /**
+     * @notice See {IERC165-supportsInterface}.
+     */
     function supportsInterface(bytes4 interfaceId_) public view virtual override returns (bool) {
         return interfaceId_ == type(IBaseRefundRequester).interfaceId || super.supportsInterface(interfaceId_);
     }
@@ -157,6 +188,11 @@ abstract contract BaseRefundRequester is
         require(IERC165(contract_).supportsInterface(type(IBaseRefundRequester).interfaceId), "BRR:I");
     }
 
+    /**
+     * @notice Common initialize function
+     * @param registry_ - holds roles data. Registry smart contract
+     * @param refundInfo_ - base refund info for initialization
+     */
     function _baseInitialize(address registry_, InitializeRefundInfo calldata refundInfo_) internal {
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
@@ -166,21 +202,52 @@ abstract contract BaseRefundRequester is
         _setRefundInfo(refundInfo_);
     }
 
+    /**
+     * @notice Set specific refund info
+     * @param refundInfo_ - base refund info for initialization
+     */
     function _setRefundInfo(InitializeRefundInfo calldata refundInfo_) internal {
         require(refundInfo_.token != address(0), "BRR:Z");
-        _checkIdentifier(refundInfo_.identifier);
+        require(_isValidIdentifier(refundInfo_.identifier), "BRR:I");
         _setVesting(refundInfo_.token, refundInfo_.identifier, refundInfo_.vesting);
         _setProjectFundsHolder(refundInfo_.token, refundInfo_.identifier, refundInfo_.projectFundsHolder);
         _setBPPrecision(refundInfo_.token, refundInfo_.identifier, refundInfo_.bpPrecision);
         _setKPIs(refundInfo_.token, refundInfo_.identifier, refundInfo_.KPIs, refundInfo_.bpPrecision);
     }
 
+    /**
+     * @notice Burn parent's shares (were minted during IDO)
+     * @param identifier_ - nique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param account_ - account's address who requested for refund
+     */
     function _burnReferralShares(address identifier_, address account_) internal virtual;
 
-    function _checkIdentifier(address identifier_) internal view virtual;
+    /**
+     * @notice Checks if identifier is valid
+     * @param identifier_ - nique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @return isValid if identifier is valid
+     */
+    function _isValidIdentifier(address identifier_) internal view virtual returns (bool);
 
-    function _getAmountOf(address identifier_, address account_) internal view virtual returns (uint256);
+    /**
+     * @notice Gets purchased amount in IDO tokens (for account)
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param account_ - user's address
+     * Last param - custom endcoded data (helps pass custom data depending on chain)
+     * @return amount amount in IDO tokens
+     */
+    function _getPurchasedAmountInToken(
+        address identifier_,
+        address account_,
+        bytes calldata
+    ) internal view virtual returns (uint256);
 
+    /**
+     * @notice Set vesting contract for refund
+     * @param token_ - refunded token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param vesting_ - vesting contract (should support IBaseRefundVesting)
+     */
     function _setVesting(
         address token_,
         address identifier_,
@@ -191,6 +258,12 @@ abstract contract BaseRefundRequester is
         emit SetVesting(token_, identifier_, vesting_);
     }
 
+    /**
+     * @notice Set BP precision for refund
+     * @param token_ - refunded token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param bpPrecision_ - BP precision (can't be zero)
+     */
     function _setBPPrecision(
         address token_,
         address identifier_,
@@ -201,6 +274,12 @@ abstract contract BaseRefundRequester is
         emit SetBPPrecision(token_, identifier_, bpPrecision_);
     }
 
+    /**
+     * @notice Set project's funds holder for refund
+     * @param token_ - refunded token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param projectFundsHolder_ - account address (can't be zero address)
+     */
     function _setProjectFundsHolder(
         address token_,
         address identifier_,
@@ -211,6 +290,14 @@ abstract contract BaseRefundRequester is
         emit SetProjectFundsHolder(token_, identifier_, projectFundsHolder_);
     }
 
+    /**
+     * @notice Change specific KPI data
+     * @param token_ - refunded token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param KPIIndex_ - KPI's index
+     * @param KPI_ - new KPI data
+     * @param bpPrecision_ - bp precision for refund
+     */
     function _setKPI(
         address token_,
         address identifier_,
@@ -242,10 +329,17 @@ abstract contract BaseRefundRequester is
             KPI_.percentInBP,
             KPI_.multiplierInBP,
             KPI_.isFullRefund,
-            KPI_.refundable
+            KPI_.isRefundable
         );
     }
 
+    /**
+     * @notice Set KPIs for refund
+     * @param token_ - refunded token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param KPIs_ - array of KPIs
+     * @param bpPrecision_ - bp precision for refund
+     */
     function _setKPIs(
         address token_,
         address identifier_,
@@ -272,12 +366,23 @@ abstract contract BaseRefundRequester is
                 KPI_.percentInBP,
                 KPI_.multiplierInBP,
                 KPI_.isFullRefund,
-                KPI_.refundable
+                KPI_.isRefundable
             );
         }
     }
 
-    function _updateRequestRefundInfoForAccount(
+    /**
+     * @notice Update refund info after successful refund claim
+     * @param token_ - refunded token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param account_ - account address
+     * @param amountToRefundInToken_ - amount of tokens that we should refund to user
+     * @param refundInToken_ - amount of tokens that user brings to the SC (which was already claimed)
+     * @param bpPrecision_ - refund's BP precision
+     * @param multiplierInBP_ - refund's multiplier
+     * @param KPIIndex_ - KPI's index
+     */
+    function _updateRequestRefundInfo(
         address token_,
         address identifier_,
         address account_,
@@ -292,17 +397,31 @@ abstract contract BaseRefundRequester is
         accountInfo.refundRequestedWithMultiplierInToken += (amountToRefundInToken_ * multiplierInBP_) / bpPrecision_;
         accountInfo.claimedRefundRequestedInToken += refundInToken_;
         accountInfo.refundRequestedByKPIInToken[KPIIndex_] += amountToRefundInToken_;
+
+        refundInfoOf[token_][identifier_].totalRefundRequestedByKPI[KPIIndex_] += amountToRefundInToken_;
     }
 
+    /**
+     * @notice Calculate how many tokens we should refund to account
+     * @param token_ - refunded token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param account_ - account address
+     * @param refundInToken_ - amount of tokens that user brings to the SC (which was already claimed)
+     * @param currentKPITotalPercentInBP_ - current KPI's total percent
+     * @param currentKPIIndex_ - current KPI's index
+     * @param payload_ - custom data
+     * @return amountToRefundInToken amount to refund (in tokens)
+     */
     function _calculateRefundAmountInToken(
         address token_,
         address identifier_,
         address account_,
         uint256 refundInToken_,
         uint64 currentKPITotalPercentInBP_,
-        uint8 currentKPIIndex_
+        uint8 currentKPIIndex_,
+        bytes calldata payload_
     ) private returns (uint256 amountToRefundInToken) {
-        uint256 total_ = _getAmountOf(identifier_, msg.sender);
+        uint256 total_ = _getPurchasedAmountInToken(identifier_, msg.sender, payload_);
         require(total_ > 0, "BRR:I");
         RefundInfo storage refundInfo = refundInfoOf[token_][identifier_];
         (uint256 currentKPIPercentInBP, uint256 claimedForCurrentKPIInToken) = _currentKPIInfo(
@@ -333,34 +452,52 @@ abstract contract BaseRefundRequester is
             : maxRefundForKPIInToken + refundInToken_ - claimedForCurrentKPIInToken;
     }
 
+    /**
+     * @notice Get current KPI info
+     * @param token_ - refunded token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param account_ - account address
+     * @param totalInToken_ - purchased amount in tokens
+     * @param currentKPITotalPercentInBP_ - current KPI's total percent
+     * @param currentKPIIndex_ - current KPI's index
+     * @param refundInfo_ - refund info object
+     */
     function _currentKPIInfo(
         address token_,
         address identifier_,
         address account_,
-        uint256 total_,
+        uint256 totalInToken_,
         uint64 currentKPITotalPercentInBP_,
         uint8 currentKPIIndex_,
-        RefundInfo storage refundInfo
+        RefundInfo storage refundInfo_
     ) private view returns (uint256 currentKPIPercentInBP, uint256 claimedForCurrentKPIInToken) {
         // Get total percent for all previous KPIs and for current KPI
         uint256 prevKPIsTotalInToken;
         currentKPIPercentInBP = currentKPITotalPercentInBP_;
         if (currentKPIIndex_ > 0) {
-            uint64 prevKPIPercentInBP = refundInfo.KPIs[currentKPIIndex_ - 1].percentInBP;
+            uint64 prevKPIPercentInBP = refundInfo_.KPIs[currentKPIIndex_ - 1].percentInBP;
             currentKPIPercentInBP -= prevKPIPercentInBP;
-            prevKPIsTotalInToken = (total_ * prevKPIPercentInBP) / refundInfo.bpPrecision;
+            prevKPIsTotalInToken = (totalInToken_ * prevKPIPercentInBP) / refundInfo_.bpPrecision;
         }
 
         // Check claimed tokens
-        uint256 totalClaimedInToken = IBaseRefundVesting(refundInfo.vesting).claimed(token_, identifier_, account_);
+        uint256 totalClaimedInToken = IBaseRefundVesting(refundInfo_.vesting).claimed(token_, identifier_, account_);
         uint256 total = totalClaimedInToken +
-            refundInfo.accountInfoOf[account_].refundRequestedInToken -
-            refundInfo.accountInfoOf[account_].claimedRefundRequestedInToken;
+            refundInfo_.accountInfoOf[account_].refundRequestedInToken -
+            refundInfo_.accountInfoOf[account_].claimedRefundRequestedInToken;
         if (total > prevKPIsTotalInToken) {
             claimedForCurrentKPIInToken = total - prevKPIsTotalInToken;
         }
     }
 
+    /**
+     * @notice Transfer tokens, if user bring some
+     * @param token_ - refunded token, can't be zero address
+     * @param projectFundsHolder_ - account who gets all tokens
+     * @param refundInToken_ - amount of tokens that user brings to the SC (which was already claimed)
+     * @param claimedForCurrentKPIInToken_ - amount of tokens that user already claimed for current KPI
+     * @param refundedForCurrentKPI_ - amount of tokens that was already refunded for current KPI
+     */
     function _handleBroughtTokens(
         address token_,
         address projectFundsHolder_,
@@ -375,6 +512,13 @@ abstract contract BaseRefundRequester is
         IERC20(token_).safeTransferFrom(msg.sender, projectFundsHolder_, refundInToken_);
     }
 
+    /**
+     * @notice Validate KPI data
+     * @param KPI_ - KPI to validate
+     * @param KPIIndex_ - KPI's index
+     * @param bpPrecision_ - project's BP precision
+     * @param length_ - KPIs length
+     */
     function _validateKPI(
         KPI memory KPI_,
         uint8 KPIIndex_,
@@ -387,6 +531,11 @@ abstract contract BaseRefundRequester is
         }
     }
 
+    /**
+     * @notice Validate KPI sequence
+     * @param KPI_ - current KPI to validate
+     * @param prevKPI_ - previous KPI to validate
+     */
     function _validateKPIsSequence(KPI memory KPI_, KPI memory prevKPI_) private pure {
         require(KPI_.dateRequestStart >= prevKPI_.dateRequestEnd, "BRR:I");
         require(KPI_.percentInBP > prevKPI_.percentInBP, "BRR:I");

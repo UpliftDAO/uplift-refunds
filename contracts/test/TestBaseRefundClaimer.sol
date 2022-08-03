@@ -18,7 +18,7 @@ contract TestBaseRefundClaimer is BaseRefundClaimer {
         address,
         address,
         bytes calldata
-    ) internal view override {}
+    ) internal view override returns (bool) {}
 
     function _getRefundAmountInIDOToken(
         address,

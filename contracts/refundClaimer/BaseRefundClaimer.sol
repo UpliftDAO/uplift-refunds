@@ -11,10 +11,18 @@ import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.s
 
 import { IBaseRefundClaimer } from "../interfaces/IBaseRefundClaimer.sol";
 import { IRefundIDO } from "../interfaces/IRefundIDO.sol";
+import { UQ112x112 } from "../libraries/UQ112x112.sol";
 import { BaseRoleChecker } from "../BaseRoleChecker.sol";
 
-import { UQ112x112 } from "../libraries/UQ112x112.sol";
-
+/**
+ * @title Base contract for claiming refunds
+ * @notice Base contract implements function for both one- and multi- chain refund claimers
+ * Contract gets requested info from IDO (one-chain) or from the Merkle Tree (multi-chain)
+ * and based on this info return buyTokens to appropriate accounts
+ * Unique refund identifier - [token][identifier], where:
+ * token - buyToken address (which we return to users)
+ * identifier - IDO address for one-chain, zero address otherwise
+ */
 abstract contract BaseRefundClaimer is
     IBaseRefundClaimer,
     UUPSUpgradeable,
@@ -38,6 +46,12 @@ abstract contract BaseRefundClaimer is
 
     constructor() initializer {}
 
+    /**
+     * @notice Initialize function
+     * @param registry_ - holds roles data. Registry smart contract
+     * @param token_ - buy token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     */
     function initialize(
         address registry_,
         address token_,
@@ -45,12 +59,19 @@ abstract contract BaseRefundClaimer is
         bytes calldata
     ) external virtual;
 
-    function claimRefund(ClaimRefundData[] calldata claimRefundData_) external nonReentrant {
+    /**
+     * @inheritdoc IBaseRefundClaimer
+     */
+    function claimRefund(ClaimRefundData[] calldata claimRefundData_) external override nonReentrant {
         _claimRefund(msg.sender, claimRefundData_);
     }
 
+    /**
+     * @inheritdoc IBaseRefundClaimer
+     */
     function claimRefundForAccount(address account_, ClaimRefundData[] calldata claimRefundData_)
         external
+        override
         nonReentrant
         onlyRole(ROLE_REFUND_CLAIMER)
     {
@@ -58,10 +79,17 @@ abstract contract BaseRefundClaimer is
         _claimRefund(account_, claimRefundData_);
     }
 
+    /**
+     * @notice See {IERC165-supportsInterface}.
+     */
     function supportsInterface(bytes4 interfaceId_) public view virtual override returns (bool) {
         return interfaceId_ == type(IBaseRefundClaimer).interfaceId || super.supportsInterface(interfaceId_);
     }
 
+    /**
+     * @notice Common initialize function
+     * @param registry_ - holds roles data. Registry smart contract
+     */
     function _baseInitialize(address registry_) internal {
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
@@ -76,25 +104,46 @@ abstract contract BaseRefundClaimer is
         require(IERC165(contract_).supportsInterface(type(IBaseRefundClaimer).interfaceId), "BRC:I");
     }
 
+    /**
+     * @notice Checks if user is valid for refund
+     * @param token_ - buy token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param account_ - user's address
+     * Last param - custom endcoded data (helps pass custom data depending on chain)
+     * @return isValid is refund claim valid
+     */
     function _isValidForRefund(
         address token_,
         address identifier_,
         address account_,
         bytes calldata
-    ) internal view virtual;
+    ) internal view virtual returns (bool);
 
+    /**
+     * @notice Gets refund amount in IDO tokens (for account)
+     * @param token_ - buy token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param account_ - user's address
+     * Last param - custom endcoded data (helps pass custom data depending on chain)
+     * @return amount amount in IDO tokens
+     */
     function _getRefundAmountInIDOToken(
         address token_,
-        address identifier,
+        address identifier_,
         address account_,
         bytes calldata
     ) internal view virtual returns (uint256 amount);
 
+    /**
+     * @notice Claim refund function
+     * @param account_ - account, for which we should claim funds
+     * @param claimRefundData_ - parameters which needed to be passed to claim refund
+     */
     function _claimRefund(address account_, ClaimRefundData[] calldata claimRefundData_) private {
         for (uint256 i; i < claimRefundData_.length; ++i) {
             address token = claimRefundData_[i].token;
             address identifier = claimRefundData_[i].identifier;
-            _isValidForRefund(token, identifier, account_, claimRefundData_[i].data);
+            require(_isValidForRefund(token, identifier, account_, claimRefundData_[i].data), "BRC:I");
 
             uint256 amountInBuyToken = _calculateRefundAmountInBuyToken(
                 token,
@@ -113,6 +162,14 @@ abstract contract BaseRefundClaimer is
         }
     }
 
+    /**
+     * @notice Calculate amount, which we should return to user
+     * @param token_ - buy token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param account_ - user's address
+     * @param data_ - specific data (different for one- and multi- chain refunds)
+     * @return amount - calculated amount (in buy token)
+     */
     function _calculateRefundAmountInBuyToken(
         address token_,
         address identifier_,

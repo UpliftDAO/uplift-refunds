@@ -58,7 +58,7 @@ describe('OneChainRefundRequester', () => {
     percentInBP: number
     multiplierInBP: number
     isFullRefund: boolean
-    refundable: boolean
+    isRefundable: boolean
   }
 
   type InitializeVestingInfo = {
@@ -127,7 +127,7 @@ describe('OneChainRefundRequester', () => {
         percentInBP: 0,
         multiplierInBP: BP,
         isFullRefund: true,
-        refundable: true
+        isRefundable: true
       },
       {
         dateRequestStart: vestingDates[0],
@@ -135,7 +135,7 @@ describe('OneChainRefundRequester', () => {
         percentInBP: vestingPercentage * 2,
         multiplierInBP: BP,
         isFullRefund: false,
-        refundable: true
+        isRefundable: true
       },
       {
         dateRequestStart: vestingDates[1],
@@ -143,7 +143,7 @@ describe('OneChainRefundRequester', () => {
         percentInBP: vestingPercentage * 3,
         multiplierInBP: BP,
         isFullRefund: false,
-        refundable: true
+        isRefundable: true
       },
       {
         dateRequestStart: vestingDates[2],
@@ -151,7 +151,7 @@ describe('OneChainRefundRequester', () => {
         percentInBP: BP,
         multiplierInBP: BP,
         isFullRefund: false,
-        refundable: true
+        isRefundable: true
       }
     ]
     refund = await new OneChainRefundRequester__factory(owner).deploy()
@@ -224,7 +224,7 @@ describe('OneChainRefundRequester', () => {
         expect(info.KPIs[i].isFullRefund).to.eq(KPIs[i].isFullRefund)
         expect(info.KPIs[i].multiplierInBP).to.eq(KPIs[i].multiplierInBP)
         expect(info.KPIs[i].percentInBP).to.eq(KPIs[i].percentInBP)
-        expect(info.KPIs[i].refundable).to.eq(KPIs[i].refundable)
+        expect(info.KPIs[i].isRefundable).to.eq(KPIs[i].isRefundable)
       }
     })
 
@@ -416,7 +416,7 @@ describe('OneChainRefundRequester', () => {
         .to.emit(refund, 'SetRefundable')
         .withArgs(IDOToken.address, ido.address, 2, true)
       const info = await refund.infoOf(IDOToken.address, ido.address, user.address)
-      expect(info.KPIs[kpiIndex].refundable).to.eq(true)
+      expect(info.KPIs[kpiIndex].isRefundable).to.eq(true)
     })
 
     it('setRefundable:successfully set false', async () => {
@@ -426,7 +426,7 @@ describe('OneChainRefundRequester', () => {
         .to.emit(refund, 'SetRefundable')
         .withArgs(IDOToken.address, ido.address, 2, false)
       const info = await refund.infoOf(IDOToken.address, ido.address, user.address)
-      expect(info.KPIs[kpiIndex].refundable).to.eq(false)
+      expect(info.KPIs[kpiIndex].isRefundable).to.eq(false)
     })
   })
 
@@ -520,7 +520,7 @@ describe('OneChainRefundRequester', () => {
           KPI.percentInBP,
           KPI.multiplierInBP,
           KPI.isFullRefund,
-          KPI.refundable
+          KPI.isRefundable
         )
     })
   })
@@ -562,7 +562,7 @@ describe('OneChainRefundRequester', () => {
           percentInBP: 0,
           multiplierInBP: bpPrecision,
           isFullRefund: true,
-          refundable: true
+          isRefundable: true
         },
         {
           dateRequestStart: vestingDates[0],
@@ -570,7 +570,7 @@ describe('OneChainRefundRequester', () => {
           percentInBP: vestingPercentage * 2,
           multiplierInBP: bpPrecision,
           isFullRefund: false,
-          refundable: true
+          isRefundable: true
         },
         {
           dateRequestStart: vestingDates[1],
@@ -578,7 +578,7 @@ describe('OneChainRefundRequester', () => {
           percentInBP: vestingPercentage * 3,
           multiplierInBP: bpPrecision,
           isFullRefund: false,
-          refundable: true
+          isRefundable: true
         },
         {
           dateRequestStart: vestingDates[2],
@@ -586,7 +586,7 @@ describe('OneChainRefundRequester', () => {
           percentInBP: bpPrecision,
           multiplierInBP: bpPrecision,
           isFullRefund: false,
-          refundable: true
+          isRefundable: true
         }
       ]
       refund = await new OneChainRefundRequester__factory(owner).deploy()
@@ -1454,6 +1454,168 @@ describe('OneChainRefundRequester', () => {
       })
     })
 
+    describe('1st KPI non-zero', () => {
+      beforeEach(async () => {
+        const kpiIndex = 0
+        KPIs[kpiIndex] = {
+          dateRequestStart: tgeDate,
+          dateRequestEnd: tgeDate + days(1),
+          percentInBP: vestingPercentage,
+          multiplierInBP: bpPrecision,
+          isFullRefund: true,
+          isRefundable: true
+        }
+
+        await refund.setKPI(IDOToken.address, ido.address, kpiIndex, KPIs[kpiIndex])
+      })
+
+      it('requestRefund:refund not full refund KPIs:claim in 1 tx', async () => {
+        await IDOToken.transfer(vesting.address, userAmountInIDOToken)
+
+        await mineBlockAtTime(ethers.provider, KPIs[0].dateRequestStart)
+        await vesting.connect(user).withdraw(IDOToken.address, ido.address)
+
+        const userBalanceInToken = await IDOToken.balanceOf(user.address)
+        let totalUserAmountInIDOToken = BigNumber.from(0)
+        let totalClaimedInIDOToken = userBalanceInToken
+
+        for (let kpiIndex = 1; kpiIndex < KPIs.length; kpiIndex++) {
+          const prevKPI = KPIs[kpiIndex - 1]
+          const percentInBP = KPIs[kpiIndex].percentInBP - prevKPI.percentInBP
+
+          const amountInIDOToken = userAmountInIDOToken.mul(percentInBP).div(bpPrecision)
+          await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+          // User claim tokens
+          await vesting.connect(user).withdraw(IDOToken.address, ido.address)
+          totalClaimedInIDOToken = totalClaimedInIDOToken.add(amountInIDOToken)
+
+          // User asks for refund
+          await IDOToken.connect(user).approve(refund.address, amountInIDOToken)
+
+          await expect(
+            refund.connect(user).requestRefund(IDOToken.address, ido.address, amountInIDOToken, kpiIndex, zeroData)
+          )
+            .to.emit(refund, 'RequestRefund')
+            .withArgs(IDOToken.address, ido.address, user.address, amountInIDOToken, amountInIDOToken, kpiIndex)
+          totalUserAmountInIDOToken = totalUserAmountInIDOToken.add(amountInIDOToken)
+
+          expect(await IDOToken.balanceOf(user.address)).to.eq(userBalanceInToken)
+
+          // Check info
+          const refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
+          expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalUserAmountInIDOToken)
+          expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalUserAmountInIDOToken)
+          expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(totalUserAmountInIDOToken)
+          expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(amountInIDOToken)
+
+          // Try to claim tokens
+          const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
+          expect(vestingInfo.refundInfo.total).to.eq(userAmountInIDOToken)
+          expect(vestingInfo.refundInfo.totalClaimed).to.eq(totalClaimedInIDOToken)
+          expect(vestingInfo.refundInfo.withdrawableAmount).to.eq(0)
+
+          await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address)).to.be.revertedWith('BRV:Z')
+        }
+      })
+
+      it('requestRefund:refund 2 KPI no claim:claim 3 and 4 KPIs:refund 4 KPI', async () => {
+        let totalClaimedInIDOToken = BigNumber.from(0)
+        let totalRefundRequestedInToken = BigNumber.from(0)
+
+        let kpiIndex = 1
+        await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+
+        const prevKPI = KPIs[kpiIndex - 1]
+        let percentInBP = KPIs[kpiIndex].percentInBP - prevKPI.percentInBP
+
+        const tokensFor1KPI = userAmountInIDOToken.mul(percentInBP).div(bpPrecision)
+
+        await IDOToken.transfer(vesting.address, userAmountInIDOToken)
+
+        // User asks for refund on KPI 2
+        let claimedTokens = await IDOToken.balanceOf(user.address)
+        totalClaimedInIDOToken = totalClaimedInIDOToken.add(claimedTokens)
+
+        const expectedRefund2 = userAmountInIDOToken.mul(percentInBP).div(bpPrecision)
+        await IDOToken.connect(user).approve(refund.address, expectedRefund2)
+
+        await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, 0, kpiIndex, zeroData))
+          .to.emit(refund, 'RequestRefund')
+          .withArgs(IDOToken.address, ido.address, user.address, expectedRefund2, 0, kpiIndex)
+        totalRefundRequestedInToken = totalRefundRequestedInToken.add(expectedRefund2)
+
+        expect(await IDOToken.balanceOf(user.address)).to.eq(0)
+
+        // Check info
+        let refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
+        expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalRefundRequestedInToken)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalRefundRequestedInToken)
+        expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
+        expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(expectedRefund2)
+
+        // Try to claim tokens
+        let vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
+        expect(vestingInfo.refundInfo.total).to.eq(userAmountInIDOToken)
+        expect(vestingInfo.refundInfo.totalClaimed).to.eq(totalClaimedInIDOToken)
+        expect(vestingInfo.refundInfo.withdrawableAmount).to.eq(tokensFor1KPI)
+
+        await vesting.connect(user).withdraw(IDOToken.address, ido.address)
+
+        // Claim 3 and 4 KPIs without refund
+        for (kpiIndex = 2; kpiIndex <= 3; ++kpiIndex) {
+          await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+
+          // User claim tokens
+          await vesting.connect(user).withdraw(IDOToken.address, ido.address)
+          claimedTokens = await IDOToken.balanceOf(user.address)
+          totalClaimedInIDOToken = claimedTokens
+
+          refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
+          expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalRefundRequestedInToken)
+          expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalRefundRequestedInToken)
+          expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
+          expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(0)
+
+          vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
+          expect(vestingInfo.refundInfo.total).to.eq(userAmountInIDOToken)
+          expect(vestingInfo.refundInfo.totalClaimed).to.eq(totalClaimedInIDOToken)
+          expect(vestingInfo.refundInfo.withdrawableAmount).to.eq(0)
+
+          await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address)).to.be.revertedWith('BRV:Z')
+        }
+
+        // Refund 4 KPI
+        kpiIndex = 3
+        percentInBP = KPIs[kpiIndex].percentInBP - KPIs[kpiIndex - 1].percentInBP
+        const expectedRefund4 = userAmountInIDOToken.mul(percentInBP).div(bpPrecision)
+        await IDOToken.connect(user).approve(refund.address, expectedRefund4)
+
+        await expect(
+          refund.connect(user).requestRefund(IDOToken.address, ido.address, expectedRefund4, kpiIndex, zeroData)
+        )
+          .to.emit(refund, 'RequestRefund')
+          .withArgs(IDOToken.address, ido.address, user.address, expectedRefund4, expectedRefund4, kpiIndex)
+
+        totalRefundRequestedInToken = totalRefundRequestedInToken.add(expectedRefund4)
+        // Tokens for the 3rd KPI
+        const tokensFor3KPI = userAmountInIDOToken.mul(KPIs[2].percentInBP - KPIs[1].percentInBP).div(bpPrecision)
+        expect(await IDOToken.balanceOf(user.address)).to.eq(tokensFor3KPI.add(tokensFor1KPI))
+
+        // Check info
+        refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
+        expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalRefundRequestedInToken)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalRefundRequestedInToken)
+        expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(expectedRefund4)
+        expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(expectedRefund4)
+
+        // Vesting info
+        vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
+        expect(vestingInfo.refundInfo.total).to.eq(userAmountInIDOToken)
+        expect(vestingInfo.refundInfo.totalClaimed).to.eq(totalClaimedInIDOToken)
+        expect(vestingInfo.refundInfo.withdrawableAmount).to.eq(0)
+      })
+    })
+
     describe('requestRefund:refund with multiplier', () => {
       let userAmountInIDOTokenWithMultiplier: BigNumber
       beforeEach(async () => {
@@ -1465,7 +1627,7 @@ describe('OneChainRefundRequester', () => {
             percentInBP: 0,
             multiplierInBP: bpPrecision,
             isFullRefund: true,
-            refundable: true
+            isRefundable: true
           },
           {
             dateRequestStart: vestingDates[0],
@@ -1473,7 +1635,7 @@ describe('OneChainRefundRequester', () => {
             percentInBP: vestingPercentage * 2,
             multiplierInBP: multiplierInBP,
             isFullRefund: false,
-            refundable: true
+            isRefundable: true
           },
           {
             dateRequestStart: vestingDates[1],
@@ -1481,7 +1643,7 @@ describe('OneChainRefundRequester', () => {
             percentInBP: vestingPercentage * 3,
             multiplierInBP: multiplierInBP,
             isFullRefund: false,
-            refundable: true
+            isRefundable: true
           },
           {
             dateRequestStart: vestingDates[2],
@@ -1489,12 +1651,12 @@ describe('OneChainRefundRequester', () => {
             percentInBP: bpPrecision,
             multiplierInBP: multiplierInBP,
             isFullRefund: false,
-            refundable: true
+            isRefundable: true
           }
         ]
-        const indices = [0, 1, 2, 3]
-        for (let i = 0; i < indices.length; i++) {
-          await refund.setKPI(IDOToken.address, ido.address, indices[i], KPIs[i])
+
+        for (let i = 0; i < KPIs.length; i++) {
+          await refund.setKPI(IDOToken.address, ido.address, i, KPIs[i])
         }
 
         userAmountInIDOTokenWithMultiplier = userAmountInIDOToken.mul(multiplierInBP).div(bpPrecision)

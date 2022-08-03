@@ -51,7 +51,7 @@ describe('OneChainDatesRefundVesting', () => {
     percentInBP: number
     multiplierInBP: number
     isFullRefund: boolean
-    refundable: boolean
+    isRefundable: boolean
   }
 
   type InitializeInfo = {
@@ -89,7 +89,7 @@ describe('OneChainDatesRefundVesting', () => {
         percentInBP: vestingPercentage,
         multiplierInBP: BP,
         isFullRefund: true,
-        refundable: true
+        isRefundable: true
       },
       {
         dateRequestStart: vestingDates[0],
@@ -97,7 +97,7 @@ describe('OneChainDatesRefundVesting', () => {
         percentInBP: vestingPercentage,
         multiplierInBP: BP,
         isFullRefund: false,
-        refundable: true
+        isRefundable: true
       },
       {
         dateRequestStart: vestingDates[1],
@@ -105,7 +105,7 @@ describe('OneChainDatesRefundVesting', () => {
         percentInBP: vestingPercentage,
         multiplierInBP: BP,
         isFullRefund: false,
-        refundable: true
+        isRefundable: true
       },
       {
         dateRequestStart: vestingDates[2],
@@ -113,7 +113,7 @@ describe('OneChainDatesRefundVesting', () => {
         percentInBP: vestingPercentage,
         multiplierInBP: BP,
         isFullRefund: false,
-        refundable: true
+        isRefundable: true
       }
     ]
     refund = await new TestRefundRequester__factory(owner).deploy(KPIs, IDOToken.address)

@@ -34,7 +34,7 @@ type KPI = {
   percentInBP: number
   multiplierInBP: number
   isFullRefund: boolean
-  refundable: boolean
+  isRefundable: boolean
 }
 
 describe('OneChainRefundClaimer', () => {
@@ -46,6 +46,7 @@ describe('OneChainRefundClaimer', () => {
   let registry: Registry
 
   let refundClaimer: OneChainRefundClaimer
+  let buyToken: TestERC20
   let proxy: ERC1967Proxy
 
   let claimRefundData: ClaimRefundData[]
@@ -65,6 +66,7 @@ describe('OneChainRefundClaimer', () => {
 
     registry = await new Registry__factory(owner).deploy(owner.address)
 
+    buyToken = await new TestERC20__factory(owner).deploy('BUSD', 'BUSD', expandTo18Decimals(1_000_000))
     IDOToken = await new TestERC20__factory(owner).deploy('IDO Token', 'IDO_TKN', expandTo18Decimals(1_000_000))
     const now = await latestBlockTimestamp(ethers.provider)
     KPIs = [
@@ -74,7 +76,7 @@ describe('OneChainRefundClaimer', () => {
         percentInBP: BP,
         multiplierInBP: BP,
         isFullRefund: true,
-        refundable: true
+        isRefundable: true
       }
     ]
     refundRequester = await new TestRefundRequester__factory(owner).deploy(KPIs, IDOToken.address)
@@ -92,9 +94,9 @@ describe('OneChainRefundClaimer', () => {
       refundClaimer.address,
       refundClaimer.interface.encodeFunctionData('initialize', [
         registry.address,
-        IDOToken.address,
+        buyToken.address,
         ido.address,
-        ethers.utils.defaultAbiCoder.encode(['address'], [refundRequester.address])
+        ethers.utils.defaultAbiCoder.encode(['address', 'address'], [refundRequester.address, IDOToken.address])
       ])
     )
     refundClaimer = refundClaimer.attach(proxy.address)
@@ -103,11 +105,11 @@ describe('OneChainRefundClaimer', () => {
       {
         data: ethers.utils.defaultAbiCoder.encode([], []),
         identifier: ido.address,
-        token: IDOToken.address
+        token: buyToken.address
       }
     ]
 
-    await IDOToken.transfer(refundClaimer.address, contractAmountInIDOToken)
+    await buyToken.transfer(refundClaimer.address, contractAmountInIDOToken)
     await refundRequester.connect(user).testRequestRefund(userAmountInIDOToken, ido.address, false)
 
     const ROLE_REFUND_CLAIMER = await refundClaimer.ROLE_REFUND_CLAIMER()
@@ -122,13 +124,17 @@ describe('OneChainRefundClaimer', () => {
     })
 
     it('upgrade:successfully', async () => {
-      expect(await refundClaimer.attach(proxy.address).refundRequesterOf(IDOToken.address, ido.address)).to.eq(
-        refundRequester.address
-      )
+      const refundRequesterInfo = await refundClaimer
+        .attach(proxy.address)
+        .requesterInfoOf(buyToken.address, ido.address)
+      expect(refundRequesterInfo.refundRequester).to.eq(refundRequester.address)
+      expect(refundRequesterInfo.IDOToken).to.eq(IDOToken.address)
       await refundClaimer.upgradeTo(updatedClaimer.address)
-      expect(await updatedClaimer.attach(proxy.address).refundRequesterOf(IDOToken.address, ido.address)).to.eq(
-        refundRequester.address
-      )
+      const refundRequesterInfo2 = await updatedClaimer
+        .attach(proxy.address)
+        .requesterInfoOf(buyToken.address, ido.address)
+      expect(refundRequesterInfo2.refundRequester).to.eq(refundRequester.address)
+      expect(refundRequesterInfo2.IDOToken).to.eq(IDOToken.address)
       expect(await updatedClaimer.attach(proxy.address).test()).to.eq('Success')
     })
 
@@ -162,7 +168,26 @@ describe('OneChainRefundClaimer', () => {
       await expect(refundClaimer.setRefundRequester(IDOToken2.address, ido.address, refundRequester2.address))
         .to.emit(refundClaimer, 'SetRefundRequester')
         .withArgs(IDOToken2.address, ido.address, refundRequester2.address)
-      expect(await refundClaimer.refundRequesterOf(IDOToken2.address, ido.address)).to.eq(refundRequester2.address)
+      const refundRequesterInfo = await refundClaimer
+        .attach(proxy.address)
+        .requesterInfoOf(IDOToken2.address, ido.address)
+      expect(refundRequesterInfo.refundRequester).to.eq(refundRequester2.address)
+    })
+
+    it('setIDOToken:forbidden', async () => {
+      await expect(
+        refundClaimer.connect(user).setIDOToken(IDOToken2.address, ido.address, refundRequester2.address)
+      ).to.revertedWith('BRC:F')
+    })
+
+    it('setIDOToken:success', async () => {
+      await expect(refundClaimer.setIDOToken(IDOToken2.address, ido.address, refundRequester2.address))
+        .to.emit(refundClaimer, 'SetIDOToken')
+        .withArgs(IDOToken2.address, ido.address, refundRequester2.address)
+      const refundRequesterInfo = await refundClaimer
+        .attach(proxy.address)
+        .requesterInfoOf(IDOToken2.address, ido.address)
+      expect(refundRequesterInfo.IDOToken).to.eq(refundRequester2.address)
     })
   })
 
@@ -180,8 +205,8 @@ describe('OneChainRefundClaimer', () => {
     it('claimRefundForAccount:success', async () => {
       await expect(refundClaimer.connect(claimer).claimRefundForAccount(user.address, claimRefundData))
         .to.emit(refundClaimer, 'ClaimRefund')
-        .withArgs(claimer.address, IDOToken.address, ido.address, user.address, userAmountInBuyToken)
-      expect(await refundClaimer.refundClaimedInBuyToken(IDOToken.address, ido.address, user.address)).to.eq(
+        .withArgs(claimer.address, buyToken.address, ido.address, user.address, userAmountInBuyToken)
+      expect(await refundClaimer.refundClaimedInBuyToken(buyToken.address, ido.address, user.address)).to.eq(
         userAmountInBuyToken
       )
     })
@@ -189,18 +214,18 @@ describe('OneChainRefundClaimer', () => {
     it('claimRefund:success', async () => {
       await expect(refundClaimer.connect(user).claimRefund(claimRefundData))
         .to.emit(refundClaimer, 'ClaimRefund')
-        .withArgs(user.address, IDOToken.address, ido.address, user.address, userAmountInBuyToken)
-      expect(await refundClaimer.refundClaimedInBuyToken(IDOToken.address, ido.address, user.address)).to.eq(
+        .withArgs(user.address, buyToken.address, ido.address, user.address, userAmountInBuyToken)
+      expect(await refundClaimer.refundClaimedInBuyToken(buyToken.address, ido.address, user.address)).to.eq(
         userAmountInBuyToken
       )
-      expect(await IDOToken.balanceOf(user.address)).to.eq(userAmountInBuyToken)
+      expect(await buyToken.balanceOf(user.address)).to.eq(userAmountInBuyToken)
     })
 
     it('claimRefundForAccount:user hasnt requested refund', async () => {
       await expect(
         refundClaimer.connect(claimer).claimRefundForAccount(inactiveUser.address, claimRefundData)
       ).to.not.emit(refundClaimer, 'ClaimRefund')
-      expect(await refundClaimer.refundClaimedInBuyToken(IDOToken.address, ido.address, user.address)).to.eq(0)
+      expect(await refundClaimer.refundClaimedInBuyToken(buyToken.address, ido.address, user.address)).to.eq(0)
     })
 
     it('claimRefund:user hasnt requested refund', async () => {
@@ -208,45 +233,45 @@ describe('OneChainRefundClaimer', () => {
         refundClaimer,
         'ClaimRefund'
       )
-      expect(await refundClaimer.refundClaimedInBuyToken(IDOToken.address, ido.address, inactiveUser.address)).to.eq(0)
-      expect(await IDOToken.balanceOf(user.address)).to.eq(0)
+      expect(await refundClaimer.refundClaimedInBuyToken(buyToken.address, ido.address, inactiveUser.address)).to.eq(0)
+      expect(await buyToken.balanceOf(user.address)).to.eq(0)
     })
 
     it('claimRefundForAccount:call claim second time without new refund requests', async () => {
       await expect(refundClaimer.connect(claimer).claimRefundForAccount(user.address, claimRefundData))
         .to.emit(refundClaimer, 'ClaimRefund')
-        .withArgs(claimer.address, IDOToken.address, ido.address, user.address, userAmountInBuyToken)
-      expect(await refundClaimer.refundClaimedInBuyToken(IDOToken.address, ido.address, user.address)).to.eq(
+        .withArgs(claimer.address, buyToken.address, ido.address, user.address, userAmountInBuyToken)
+      expect(await refundClaimer.refundClaimedInBuyToken(buyToken.address, ido.address, user.address)).to.eq(
         userAmountInBuyToken
       )
-      expect(await IDOToken.balanceOf(user.address)).to.eq(userAmountInBuyToken)
+      expect(await buyToken.balanceOf(user.address)).to.eq(userAmountInBuyToken)
 
       await expect(refundClaimer.connect(claimer).claimRefundForAccount(user.address, claimRefundData)).to.not.emit(
         refundClaimer,
         'ClaimRefund'
       )
-      expect(await refundClaimer.refundClaimedInBuyToken(IDOToken.address, ido.address, user.address)).to.eq(
+      expect(await refundClaimer.refundClaimedInBuyToken(buyToken.address, ido.address, user.address)).to.eq(
         userAmountInBuyToken
       )
-      expect(await IDOToken.balanceOf(user.address)).to.eq(userAmountInBuyToken)
+      expect(await buyToken.balanceOf(user.address)).to.eq(userAmountInBuyToken)
     })
 
     it('claimRefundForAccount:successfull call claim second time with new refund request', async () => {
       await expect(refundClaimer.connect(claimer).claimRefundForAccount(user.address, claimRefundData))
         .to.emit(refundClaimer, 'ClaimRefund')
-        .withArgs(claimer.address, IDOToken.address, ido.address, user.address, userAmountInBuyToken)
-      expect(await IDOToken.balanceOf(user.address)).to.eq(userAmountInBuyToken)
+        .withArgs(claimer.address, buyToken.address, ido.address, user.address, userAmountInBuyToken)
+      expect(await buyToken.balanceOf(user.address)).to.eq(userAmountInBuyToken)
 
       // second requestRefund
       await refundRequester.connect(user).testRequestRefund(userAmountInIDOToken, ido.address, false)
 
       await expect(refundClaimer.connect(claimer).claimRefundForAccount(user.address, claimRefundData))
         .to.emit(refundClaimer, 'ClaimRefund')
-        .withArgs(claimer.address, IDOToken.address, ido.address, user.address, userAmountInBuyToken)
+        .withArgs(claimer.address, buyToken.address, ido.address, user.address, userAmountInBuyToken)
 
       const total = userAmountInBuyToken.add(userAmountInBuyToken)
-      expect(await refundClaimer.refundClaimedInBuyToken(IDOToken.address, ido.address, user.address)).to.eq(total)
-      expect(await IDOToken.balanceOf(user.address)).to.eq(total)
+      expect(await refundClaimer.refundClaimedInBuyToken(buyToken.address, ido.address, user.address)).to.eq(total)
+      expect(await buyToken.balanceOf(user.address)).to.eq(total)
     })
 
     it('claimRefundForAccount:fakeToken token-identifier pair', async () => {
@@ -263,7 +288,7 @@ describe('OneChainRefundClaimer', () => {
         }
       ]
       await expect(refundClaimer.connect(claimer).claimRefundForAccount(user.address, claimRefundData)).to.revertedWith(
-        'OCRC:Z'
+        'BRC:I'
       )
     })
 
@@ -273,15 +298,16 @@ describe('OneChainRefundClaimer', () => {
         {
           data: ethers.utils.defaultAbiCoder.encode([], []),
           identifier: fakeIDO.address,
-          token: IDOToken.address
+          token: buyToken.address
         }
       ]
       await expect(refundClaimer.connect(claimer).claimRefundForAccount(user.address, claimRefundData)).to.revertedWith(
-        'OCRC:Z'
+        'BRC:I'
       )
     })
 
     it('claimRefund:successfully claim from two refund requesters', async () => {
+      const buyToken2 = await new TestERC20__factory(owner).deploy('BUSD2', 'BUSD2', expandTo18Decimals(1_000_000))
       const IDOToken2 = await new TestERC20__factory(owner).deploy(
         'IDO Token 2',
         'IDO_TKN2',
@@ -291,33 +317,33 @@ describe('OneChainRefundClaimer', () => {
         {
           data: ethers.utils.defaultAbiCoder.encode([], []),
           identifier: ido.address,
-          token: IDOToken.address
+          token: buyToken.address
         },
         {
           data: ethers.utils.defaultAbiCoder.encode([], []),
           identifier: ido.address,
-          token: IDOToken2.address
+          token: buyToken2.address
         }
       ]
-      await IDOToken2.transfer(refundClaimer.address, contractAmountInIDOToken)
+      await buyToken2.transfer(refundClaimer.address, contractAmountInIDOToken)
       const refundRequester2 = await new TestRefundRequester__factory(owner).deploy(KPIs, IDOToken2.address)
       await refundRequester2.connect(user).testRequestRefund(userAmountInIDOToken, ido.address, false)
 
-      await refundClaimer.setRefundRequester(IDOToken2.address, ido.address, refundRequester2.address)
+      await refundClaimer.setRefundRequester(buyToken2.address, ido.address, refundRequester2.address)
 
       await expect(refundClaimer.connect(user).claimRefund(claimRefundData))
         .to.emit(refundClaimer, 'ClaimRefund')
-        .withArgs(user.address, IDOToken.address, ido.address, user.address, userAmountInBuyToken)
+        .withArgs(user.address, buyToken.address, ido.address, user.address, userAmountInBuyToken)
         .to.emit(refundClaimer, 'ClaimRefund')
-        .withArgs(user.address, IDOToken2.address, ido.address, user.address, userAmountInBuyToken)
-      expect(await refundClaimer.refundClaimedInBuyToken(IDOToken.address, ido.address, user.address)).to.eq(
+        .withArgs(user.address, buyToken2.address, ido.address, user.address, userAmountInBuyToken)
+      expect(await refundClaimer.refundClaimedInBuyToken(buyToken2.address, ido.address, user.address)).to.eq(
         userAmountInBuyToken
       )
-      expect(await IDOToken.balanceOf(user.address)).to.eq(userAmountInBuyToken)
-      expect(await refundClaimer.refundClaimedInBuyToken(IDOToken2.address, ido.address, user.address)).to.eq(
+      expect(await buyToken.balanceOf(user.address)).to.eq(userAmountInBuyToken)
+      expect(await refundClaimer.refundClaimedInBuyToken(buyToken2.address, ido.address, user.address)).to.eq(
         userAmountInBuyToken
       )
-      expect(await IDOToken2.balanceOf(user.address)).to.eq(userAmountInBuyToken)
+      expect(await buyToken2.balanceOf(user.address)).to.eq(userAmountInBuyToken)
     })
   })
 })
