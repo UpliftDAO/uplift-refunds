@@ -13,17 +13,25 @@ contract TestBaseRefundClaimer is BaseRefundClaimer {
         _baseInitialize(registry_);
     }
 
+    function addRefundClaim(
+        address,
+        address,
+        bytes calldata
+    ) external virtual override {}
+
     function _isValidForRefund(
         address,
         address,
         address,
+        uint8[] calldata,
         bytes calldata
     ) internal view override returns (bool) {}
 
-    function _getRefundAmountInIDOToken(
+    function _getRefundAmountsInIDOToken(
         address,
         address,
         address,
+        uint8[] calldata,
         bytes calldata
-    ) internal view override returns (uint256) {}
+    ) internal view override returns (uint256, uint256[] memory) {}
 }

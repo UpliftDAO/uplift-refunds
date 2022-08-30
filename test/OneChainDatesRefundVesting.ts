@@ -20,6 +20,7 @@ import {
 } from '../typechain'
 import { days, hours } from '../utils/time'
 import { expandTo18Decimals, latestBlockTimestamp, mineBlockAtTime, toUQ112 } from '../utils/utilities'
+import { TestDeflationaryERC20__factory } from './../typechain/factories/TestDeflationaryERC20__factory'
 
 describe('OneChainDatesRefundVesting', () => {
   let owner: SignerWithAddress
@@ -52,6 +53,7 @@ describe('OneChainDatesRefundVesting', () => {
     multiplierInBP: number
     isFullRefund: boolean
     isRefundable: boolean
+    isClaimable: boolean
   }
 
   type InitializeInfo = {
@@ -78,7 +80,7 @@ describe('OneChainDatesRefundVesting', () => {
     const referralPool = await new TestReferralPool__factory(owner).deploy()
     ido = await new TestRefundIDO__factory(owner).deploy()
     const priceTokenPerBuyTokenInUQ = toUQ112(userAmountInBuyToken).div(userAmountInIDOToken)
-    await ido.setBaseInfo(referralPool.address, priceTokenPerBuyTokenInUQ)
+    await ido.setBaseInfo(referralPool.address, priceTokenPerBuyTokenInUQ, IDOToken.address)
     await ido.addAccount(user.address, userAmountInIDOToken, ethers.constants.AddressZero, ethers.constants.AddressZero)
 
     // Mock Refund
@@ -89,7 +91,8 @@ describe('OneChainDatesRefundVesting', () => {
         percentInBP: vestingPercentage,
         multiplierInBP: BP,
         isFullRefund: true,
-        isRefundable: true
+        isRefundable: true,
+        isClaimable: true
       },
       {
         dateRequestStart: vestingDates[0],
@@ -97,7 +100,8 @@ describe('OneChainDatesRefundVesting', () => {
         percentInBP: vestingPercentage,
         multiplierInBP: BP,
         isFullRefund: false,
-        isRefundable: true
+        isRefundable: true,
+        isClaimable: true
       },
       {
         dateRequestStart: vestingDates[1],
@@ -105,7 +109,8 @@ describe('OneChainDatesRefundVesting', () => {
         percentInBP: vestingPercentage,
         multiplierInBP: BP,
         isFullRefund: false,
-        isRefundable: true
+        isRefundable: true,
+        isClaimable: true
       },
       {
         dateRequestStart: vestingDates[2],
@@ -113,7 +118,8 @@ describe('OneChainDatesRefundVesting', () => {
         percentInBP: vestingPercentage,
         multiplierInBP: BP,
         isFullRefund: false,
-        isRefundable: true
+        isRefundable: true,
+        isClaimable: true
       }
     ]
     refund = await new TestRefundRequester__factory(owner).deploy(KPIs, IDOToken.address)
@@ -176,6 +182,31 @@ describe('OneChainDatesRefundVesting', () => {
       // Check common info
       expect(info.refundInfo.refund).to.eq(refund.address)
     })
+
+    it('initialization:dates vesting library failed initialization:BP precision is less than TGE percentage', async () => {
+      // Deploy vesting
+      vesting = await new OneChainDatesRefundVesting__factory(owner).deploy()
+      const initializeInfo: InitializeInfo = {
+        token: IDOToken.address,
+        identifier: ido.address,
+        refund: refund.address
+      }
+
+      bpPrecision = tgePercentage - 1
+      await expect(
+        new ERC1967Proxy__factory(owner).deploy(
+          vesting.address,
+          vesting.interface.encodeFunctionData('initialize', [
+            registry.address,
+            initializeInfo,
+            ethers.utils.defaultAbiCoder.encode(
+              ['uint64', 'uint64', 'uint32', 'uint32[]'],
+              [bpPrecision, tgePercentage, tgeDate, vestingDates]
+            )
+          ])
+        )
+      ).to.revertedWith('DVL:I')
+    })
   })
 
   describe('vesting with refunds', () => {
@@ -184,7 +215,7 @@ describe('OneChainDatesRefundVesting', () => {
 
       // User request refund for TGE (25 tokens)
       const available = await vesting.withdrawableOf(IDOToken.address, ido.address, user.address)
-      await refund.connect(user).testRequestRefund(available, ido.address, false)
+      await refund.connect(user).testRequestRefund(available, available, ido.address, false)
       let info = await vesting.infoOf(IDOToken.address, ido.address, user.address)
       expect(info.refundInfo.totalClaimed).to.eq(0)
 
@@ -203,7 +234,7 @@ describe('OneChainDatesRefundVesting', () => {
 
         await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address))
           .to.emit(vesting, 'Withdraw')
-          .withArgs(IDOToken.address, ido.address, user.address, available1)
+          .withArgs(IDOToken.address, ido.address, user.address, available1, available1)
 
         info = await vesting.infoOf(IDOToken.address, ido.address, user.address)
         expect(info.refundInfo.totalClaimed).to.eq(expectedAvailable1.mul(i + 1))
@@ -227,7 +258,7 @@ describe('OneChainDatesRefundVesting', () => {
 
       // User refund full TGE tokens
       await IDOToken.connect(user).approve(refund.address, available)
-      await refund.connect(user).testRequestRefund(available, ido.address, true)
+      await refund.connect(user).testRequestRefund(available, available, ido.address, true)
 
       info = await vesting.infoOf(IDOToken.address, ido.address, user.address)
       expect(info.refundInfo.totalClaimed).to.eq(available)
@@ -245,7 +276,7 @@ describe('OneChainDatesRefundVesting', () => {
 
         await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address))
           .to.emit(vesting, 'Withdraw')
-          .withArgs(IDOToken.address, ido.address, user.address, available1)
+          .withArgs(IDOToken.address, ido.address, user.address, available1, available1)
 
         info = await vesting.infoOf(IDOToken.address, ido.address, user.address)
         expect(info.refundInfo.totalClaimed).to.eq(available.add(expectedAvailable1.mul(i + 1)))
@@ -271,7 +302,7 @@ describe('OneChainDatesRefundVesting', () => {
       await IDOToken.approve(refund.address, available)
       const refundAmount = available.div(2)
       await IDOToken.connect(user).approve(refund.address, refundAmount)
-      await refund.connect(user).testRequestRefund(refundAmount, ido.address, true)
+      await refund.connect(user).testRequestRefund(refundAmount, refundAmount, ido.address, true)
 
       info = await vesting.infoOf(IDOToken.address, ido.address, user.address)
       expect(info.refundInfo.totalClaimed).to.eq(available)
@@ -289,7 +320,7 @@ describe('OneChainDatesRefundVesting', () => {
 
         await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address))
           .to.emit(vesting, 'Withdraw')
-          .withArgs(IDOToken.address, ido.address, user.address, available1)
+          .withArgs(IDOToken.address, ido.address, user.address, available1, available1)
 
         info = await vesting.infoOf(IDOToken.address, ido.address, user.address)
         expect(info.refundInfo.totalClaimed).to.eq(available.add(expectedAvailable1.mul(i + 1)))
@@ -316,7 +347,7 @@ describe('OneChainDatesRefundVesting', () => {
       const expectedAvailable2 = userAmountInIDOToken.mul(KPIs[1].percentInBP).div(bpPrecision)
       expect(available2).to.eq(expectedAvailable2)
 
-      await refund.connect(user).testRequestRefund(available2, ido.address, false)
+      await refund.connect(user).testRequestRefund(available2, available2, ido.address, false)
       let info = await vesting.infoOf(IDOToken.address, ido.address, user.address)
       expect(info.refundInfo.totalClaimed).to.eq(available1)
 
@@ -336,7 +367,7 @@ describe('OneChainDatesRefundVesting', () => {
       const expectedAvailable4 = userAmountInIDOToken.mul(KPIs[1].percentInBP).div(bpPrecision)
       expect(available4).to.eq(expectedAvailable4)
 
-      await refund.connect(user).testRequestRefund(available4, ido.address, false)
+      await refund.connect(user).testRequestRefund(available4, available4, ido.address, false)
       info = await vesting.infoOf(IDOToken.address, ido.address, user.address)
       expect(info.refundInfo.totalClaimed).to.eq(available1.add(available3))
 
@@ -363,7 +394,7 @@ describe('OneChainDatesRefundVesting', () => {
 
       await vesting.connect(user).withdraw(IDOToken.address, ido.address)
       await IDOToken.connect(user).approve(refund.address, available2)
-      await refund.connect(user).testRequestRefund(available2, ido.address, true)
+      await refund.connect(user).testRequestRefund(available2, available2, ido.address, true)
       let info = await vesting.infoOf(IDOToken.address, ido.address, user.address)
       expect(info.refundInfo.totalClaimed).to.eq(available1.add(available2))
 
@@ -383,7 +414,7 @@ describe('OneChainDatesRefundVesting', () => {
       const expectedAvailable4 = userAmountInIDOToken.mul(KPIs[1].percentInBP).div(bpPrecision)
       expect(available4).to.eq(expectedAvailable4)
 
-      await refund.connect(user).testRequestRefund(available4, ido.address, false)
+      await refund.connect(user).testRequestRefund(available4, available4, ido.address, false)
       info = await vesting.infoOf(IDOToken.address, ido.address, user.address)
       expect(info.refundInfo.totalClaimed).to.eq(available1.add(available2).add(available3))
 
@@ -406,7 +437,7 @@ describe('OneChainDatesRefundVesting', () => {
       expect(available).to.eq(expectedAvailable)
 
       const askFor2Refund = userAmountInIDOToken.mul(KPIs[1].percentInBP).div(bpPrecision)
-      await refund.connect(user).testRequestRefund(askFor2Refund, ido.address, false)
+      await refund.connect(user).testRequestRefund(askFor2Refund, askFor2Refund, ido.address, false)
 
       // User claims 1 and 3 KPI
       await mineBlockAtTime(ethers.provider, vestingDates[1])
@@ -423,10 +454,61 @@ describe('OneChainDatesRefundVesting', () => {
     it('claim after refund', async () => {
       await mineBlockAtTime(ethers.provider, tgeDate)
       const available = await vesting.withdrawableOf(IDOToken.address, ido.address, user.address)
-      await refund.connect(user).testRequestRefund(available, ido.address, false)
+      await refund.connect(user).testRequestRefund(available, available, ido.address, false)
 
       // User can't claim TGE tokens (already refunded)
       await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address)).to.be.revertedWith('BRV:Z')
+    })
+
+    it('withdraw:deflationary token', async () => {
+      const deflationaryInBP = 500
+      const IDOTokenDeflationary = await new TestDeflationaryERC20__factory(owner).deploy(
+        'IDO Token',
+        'IDO_TKN',
+        expandTo18Decimals(1_000_000),
+        deflationaryInBP
+      )
+
+      refund = await new TestRefundRequester__factory(owner).deploy(KPIs, IDOTokenDeflationary.address)
+
+      // Deploy vesting
+      vesting = await new OneChainDatesRefundVesting__factory(owner).deploy()
+      const initializeInfo: InitializeInfo = {
+        token: IDOTokenDeflationary.address,
+        identifier: ido.address,
+        refund: refund.address
+      }
+
+      proxy = await new ERC1967Proxy__factory(owner).deploy(
+        vesting.address,
+        vesting.interface.encodeFunctionData('initialize', [
+          registry.address,
+          initializeInfo,
+          ethers.utils.defaultAbiCoder.encode(
+            ['uint64', 'uint64', 'uint32', 'uint32[]'],
+            [bpPrecision, tgePercentage, tgeDate, vestingDates]
+          )
+        ])
+      )
+      vesting = vesting.attach(proxy.address)
+
+      await mineBlockAtTime(ethers.provider, tgeDate)
+      await IDOTokenDeflationary.transfer(vesting.address, userAmountInIDOToken)
+
+      // User claim TGE tokens
+      const available = await vesting.withdrawableOf(IDOTokenDeflationary.address, ido.address, user.address)
+      const amountInTokenAfterTransfer = available.sub(available.mul(deflationaryInBP).div(BP))
+      await expect(vesting.connect(user).withdraw(IDOTokenDeflationary.address, ido.address))
+        .to.emit(vesting, 'Withdraw')
+        .withArgs(IDOTokenDeflationary.address, ido.address, user.address, available, amountInTokenAfterTransfer)
+      expect(await IDOTokenDeflationary.balanceOf(user.address)).to.eq(amountInTokenAfterTransfer)
+      const info = await vesting.infoOf(IDOTokenDeflationary.address, ido.address, user.address)
+      expect(info.refundInfo.total).to.eq(userAmountInIDOToken)
+      expect(info.refundInfo.totalClaimed).to.eq(available)
+      expect(info.refundInfo.withdrawableAmount).to.eq(0)
+
+      // Check available
+      expect(await vesting.withdrawableOf(IDOTokenDeflationary.address, ido.address, user.address)).to.eq(0)
     })
   })
 
@@ -470,7 +552,7 @@ describe('OneChainDatesRefundVesting', () => {
         const lastBalance = await IDOToken2.balanceOf(user.address)
         await expect(vesting.connect(user).withdraw(IDOToken2.address, ido.address))
           .to.emit(vesting, 'Withdraw')
-          .withArgs(IDOToken2.address, ido.address, user.address, userAmountInIDOToken)
+          .withArgs(IDOToken2.address, ido.address, user.address, userAmountInIDOToken, userAmountInIDOToken)
 
         expect(await IDOToken2.balanceOf(user.address)).to.eq(lastBalance.add(userAmountInIDOToken))
 
@@ -659,7 +741,7 @@ describe('OneChainDatesRefundVesting', () => {
 
           await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address))
             .to.emit(vesting, 'Withdraw')
-            .withArgs(IDOToken.address, ido.address, user.address, expectedTge)
+            .withArgs(IDOToken.address, ido.address, user.address, expectedTge, expectedTge)
 
           let alreadyWithdrawn = expectedTge
           expect(await IDOToken.balanceOf(user.address)).to.eq(lastUserBalance.add(expectedTge))
@@ -681,6 +763,7 @@ describe('OneChainDatesRefundVesting', () => {
               IDOToken.address,
               ido.address,
               user.address,
+              userAmountInIDOToken.mul(vestingPercentage).div(bpPrecision),
               userAmountInIDOToken.mul(vestingPercentage).div(bpPrecision)
             )
           alreadyWithdrawn = alreadyWithdrawn.add(userAmountInIDOToken.mul(vestingPercentage).div(bpPrecision))
@@ -695,7 +778,7 @@ describe('OneChainDatesRefundVesting', () => {
           expect(await vesting.withdrawableOf(IDOToken.address, ido.address, user.address)).to.eq(vesting1to6)
           await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address))
             .to.emit(vesting, 'Withdraw')
-            .withArgs(IDOToken.address, ido.address, user.address, vesting1to6)
+            .withArgs(IDOToken.address, ido.address, user.address, vesting1to6, vesting1to6)
 
           alreadyWithdrawn = alreadyWithdrawn.add(vesting1to6)
           info = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -709,7 +792,7 @@ describe('OneChainDatesRefundVesting', () => {
           expect(await vesting.withdrawableOf(IDOToken.address, ido.address, user.address)).to.eq(vesting7to11)
           await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address))
             .to.emit(vesting, 'Withdraw')
-            .withArgs(IDOToken.address, ido.address, user.address, vesting7to11)
+            .withArgs(IDOToken.address, ido.address, user.address, vesting7to11, vesting7to11)
 
           info = await vesting.infoOf(IDOToken.address, ido.address, user.address)
           expect(info.refundInfo.total).to.eq(userAmountInIDOToken)
@@ -727,7 +810,7 @@ describe('OneChainDatesRefundVesting', () => {
 
           await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address))
             .to.emit(vesting, 'Withdraw')
-            .withArgs(IDOToken.address, ido.address, user.address, userAmountInIDOToken)
+            .withArgs(IDOToken.address, ido.address, user.address, userAmountInIDOToken, userAmountInIDOToken)
 
           expect(await IDOToken.balanceOf(vesting.address)).to.eq(0)
           await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address)).to.be.revertedWith('BRV:Z')
@@ -743,7 +826,7 @@ describe('OneChainDatesRefundVesting', () => {
 
           await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address))
             .to.emit(vesting, 'Withdraw')
-            .withArgs(IDOToken.address, ido.address, user.address, expectedTge)
+            .withArgs(IDOToken.address, ido.address, user.address, expectedTge, expectedTge)
 
           expect(await IDOToken.balanceOf(user.address)).to.eq(lastUserBalance.add(expectedTge))
           expect(await IDOToken.balanceOf(vesting.address)).to.eq(lastContractBalance.sub(expectedTge))
@@ -752,7 +835,13 @@ describe('OneChainDatesRefundVesting', () => {
 
           await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address))
             .to.emit(vesting, 'Withdraw')
-            .withArgs(IDOToken.address, ido.address, user.address, userAmountInIDOToken.sub(expectedTge))
+            .withArgs(
+              IDOToken.address,
+              ido.address,
+              user.address,
+              userAmountInIDOToken.sub(expectedTge),
+              userAmountInIDOToken.sub(expectedTge)
+            )
 
           expect(await IDOToken.balanceOf(vesting.address)).to.eq(0)
           await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address)).to.be.revertedWith('BRV:Z')
@@ -767,14 +856,20 @@ describe('OneChainDatesRefundVesting', () => {
 
           await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address))
             .to.emit(vesting, 'Withdraw')
-            .withArgs(IDOToken.address, ido.address, user.address, vestingTgePlus1)
+            .withArgs(IDOToken.address, ido.address, user.address, vestingTgePlus1, vestingTgePlus1)
 
           await mineBlockAtTime(ethers.provider, vestingDates[11] + days(3)) // total 12 months
 
           // 2 + 10 = 12
           await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address))
             .to.emit(vesting, 'Withdraw')
-            .withArgs(IDOToken.address, ido.address, user.address, userAmountInIDOToken.sub(vestingTgePlus1))
+            .withArgs(
+              IDOToken.address,
+              ido.address,
+              user.address,
+              userAmountInIDOToken.sub(vestingTgePlus1),
+              userAmountInIDOToken.sub(vestingTgePlus1)
+            )
 
           expect(await IDOToken.balanceOf(vesting.address)).to.eq(0)
           await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address)).to.be.revertedWith('BRV:Z')
@@ -789,7 +884,7 @@ describe('OneChainDatesRefundVesting', () => {
           const lastBalance = await IDOToken.balanceOf(user.address)
           await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address))
             .to.emit(vesting, 'Withdraw')
-            .withArgs(IDOToken.address, ido.address, user.address, expectedTge)
+            .withArgs(IDOToken.address, ido.address, user.address, expectedTge, expectedTge)
 
           expect(await IDOToken.balanceOf(user.address)).to.eq(lastBalance.add(expectedTge))
 
@@ -805,6 +900,7 @@ describe('OneChainDatesRefundVesting', () => {
               IDOToken.address,
               ido.address,
               user.address,
+              userAmountInIDOToken.mul(vestingPercentage).div(bpPrecision),
               userAmountInIDOToken.mul(vestingPercentage).div(bpPrecision)
             )
 
@@ -829,6 +925,7 @@ describe('OneChainDatesRefundVesting', () => {
               IDOToken.address,
               ido.address,
               user.address,
+              userAmountInIDOToken.mul(vestingPercentage).div(bpPrecision),
               userAmountInIDOToken.mul(vestingPercentage).div(bpPrecision)
             )
           info = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -847,7 +944,7 @@ describe('OneChainDatesRefundVesting', () => {
           await mineBlockAtTime(ethers.provider, tgeDate)
           await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address))
             .to.emit(vesting, 'Withdraw')
-            .withArgs(IDOToken.address, ido.address, user.address, expectedTge)
+            .withArgs(IDOToken.address, ido.address, user.address, expectedTge, expectedTge)
 
           for (let i = 0; i < vestingDates.length; ++i) {
             await mineBlockAtTime(ethers.provider, vestingDates[i])
@@ -857,6 +954,7 @@ describe('OneChainDatesRefundVesting', () => {
                 IDOToken.address,
                 ido.address,
                 user.address,
+                userAmountInIDOToken.mul(vestingPercentage).div(bpPrecision),
                 userAmountInIDOToken.mul(vestingPercentage).div(bpPrecision)
               )
           }

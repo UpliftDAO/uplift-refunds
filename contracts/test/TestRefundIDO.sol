@@ -8,6 +8,7 @@ import { IPool } from "../interfaces/IPool.sol";
 
 contract TestRefundIDO is IRefundIDO, ERC165 {
     address public referralPool;
+    address public override buyToken;
     uint256 public override pricePerTokenInUQ;
 
     mapping(address => uint256) public override amountOf;
@@ -26,9 +27,10 @@ contract TestRefundIDO is IRefundIDO, ERC165 {
         referrersOf[account_].push(Referrer(grandparent_, amount_));
     }
 
-    function setBaseInfo(address referralPool_, uint256 pricePerTokenInUQ_) external {
+    function setBaseInfo(address referralPool_, uint256 pricePerTokenInUQ_, address buyToken_) external {
         referralPool = referralPool_;
         pricePerTokenInUQ = pricePerTokenInUQ_;
+        buyToken = buyToken_;
     }
 
     function referrersInfoOf(address account_)

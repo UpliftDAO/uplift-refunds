@@ -19,8 +19,8 @@ import { BaseRoleChecker } from "../BaseRoleChecker.sol";
  * @notice Base contract implements function for both one- and multi- chain refund claimers
  * Contract gets requested info from IDO (one-chain) or from the Merkle Tree (multi-chain)
  * and based on this info return buyTokens to appropriate accounts
- * Unique refund identifier - [token][identifier], where:
- * token - buyToken address (which we return to users)
+ * Unique refund identifier - [IDOToken][identifier], where:
+ * IDOToken - distribution token (which user bought in the IDO)
  * identifier - IDO address for one-chain, zero address otherwise
  */
 abstract contract BaseRefundClaimer is
@@ -34,8 +34,9 @@ abstract contract BaseRefundClaimer is
 
     bytes32 public constant ROLE_REFUND_CLAIMER = keccak256("ROLE_REFUND_CLAIMER");
 
-    // [token][identifier][account]
-    mapping(address => mapping(address => mapping(address => uint256))) public override refundClaimedInBuyToken;
+    // [IDOToken][identifier][account][KPIIndex]
+    mapping(address => mapping(address => mapping(address => mapping(uint8 => uint256))))
+        public refundClaimedByKPIInIDOToken;
 
     /**
      * @dev This empty reserved space is put in place to allow future versions to add new
@@ -49,12 +50,23 @@ abstract contract BaseRefundClaimer is
     /**
      * @notice Initialize function
      * @param registry_ - holds roles data. Registry smart contract
-     * @param token_ - buy token, can't be zero address
+     * @param IDOToken_ - distribution token (which user bought in the IDO)
      * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
      */
     function initialize(
         address registry_,
-        address token_,
+        address IDOToken_,
+        address identifier_,
+        bytes calldata
+    ) external virtual;
+
+    /**
+     * @notice Add new refund claimer pair
+     * @param IDOToken_ - distribution token (which user bought in the IDO)
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     */
+    function addRefundClaim(
+        address IDOToken_,
         address identifier_,
         bytes calldata
     ) external virtual;
@@ -80,6 +92,26 @@ abstract contract BaseRefundClaimer is
     }
 
     /**
+     * @inheritdoc IBaseRefundClaimer
+     */
+    function infoOf(
+        address IDOToken_,
+        address identifier_,
+        address account_,
+        uint8[] calldata KPIIndices_
+    ) external view returns (RefundClaimedInfoOfData[] memory data) {
+        uint256 length = KPIIndices_.length;
+        data = new RefundClaimedInfoOfData[](length);
+        for (uint256 i; i < length; ++i) {
+            uint8 KPIIndex = KPIIndices_[i];
+            data[i].KPIIndex = KPIIndex;
+            data[i].refundClaimedByKPIInIDOToken = refundClaimedByKPIInIDOToken[IDOToken_][identifier_][account_][
+                KPIIndex
+            ];
+        }
+    }
+
+    /**
      * @notice See {IERC165-supportsInterface}.
      */
     function supportsInterface(bytes4 interfaceId_) public view virtual override returns (bool) {
@@ -96,6 +128,31 @@ abstract contract BaseRefundClaimer is
         __ERC165_init();
         __BaseRoleChecker_init(registry_);
     }
+
+    /**
+     * @notice Check if identifier is valid
+     * @param identifier_ - identifier, should be valid IDO
+     */
+    function _checkIdentifier(address identifier_) internal view {
+        require(IERC165(identifier_).supportsInterface(type(IRefundIDO).interfaceId), "BRC:I");
+    }
+
+    /**
+     * @notice Gets total refund amount and refund amounts by KPI in IDO tokens (for account)
+     * @param token_ - buy token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param account_ - user's address
+     * Last param - custom endcoded data (helps pass custom data depending on chain)
+     * @return amountTotalInIDOToken total amount in IDO tokens
+     * @return amountsByKPIInIDOToken amount by KPI in IDO tokens
+     */
+    function _getRefundAmountsInIDOToken(
+        address token_,
+        address identifier_,
+        address account_,
+        uint8[] calldata KPIIndices_,
+        bytes calldata
+    ) internal view virtual returns (uint256 amountTotalInIDOToken, uint256[] memory amountsByKPIInIDOToken);
 
     /**
      * @inheritdoc UUPSUpgradeable
@@ -116,23 +173,37 @@ abstract contract BaseRefundClaimer is
         address token_,
         address identifier_,
         address account_,
+        uint8[] calldata KPIIndices_,
         bytes calldata
     ) internal view virtual returns (bool);
 
     /**
-     * @notice Gets refund amount in IDO tokens (for account)
+     * @notice Calculate amount, which we should return to user
      * @param token_ - buy token, can't be zero address
      * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
      * @param account_ - user's address
-     * Last param - custom endcoded data (helps pass custom data depending on chain)
-     * @return amount amount in IDO tokens
+     * @param data_ - specific data (different for one- and multi- chain refunds)
+     * @param KPIIndices_ - array of KPI indices
+     * @return amountInBuyToken - calculated amount (in buy token)
+     * @return amountsByKPIInIDOToken - claimed amount by KPI in IDO token
      */
-    function _getRefundAmountInIDOToken(
+    function _calculateRefundAmount(
         address token_,
         address identifier_,
         address account_,
-        bytes calldata
-    ) internal view virtual returns (uint256 amount);
+        uint8[] calldata KPIIndices_,
+        bytes calldata data_
+    ) private view returns (uint256 amountInBuyToken, uint256[] memory amountsByKPIInIDOToken) {
+        uint256 amountTotalInIDOToken;
+        (amountTotalInIDOToken, amountsByKPIInIDOToken) = _getRefundAmountsInIDOToken(
+            token_,
+            identifier_,
+            account_,
+            KPIIndices_,
+            data_
+        );
+        amountInBuyToken = (amountTotalInIDOToken * UQ112x112.Q112) / IRefundIDO(identifier_).pricePerTokenInUQ();
+    }
 
     /**
      * @notice Claim refund function
@@ -141,50 +212,48 @@ abstract contract BaseRefundClaimer is
      */
     function _claimRefund(address account_, ClaimRefundData[] calldata claimRefundData_) private {
         for (uint256 i; i < claimRefundData_.length; ++i) {
-            address token = claimRefundData_[i].token;
+            address IDOToken = claimRefundData_[i].token;
             address identifier = claimRefundData_[i].identifier;
-            require(_isValidForRefund(token, identifier, account_, claimRefundData_[i].data), "BRC:I");
+            require(
+                _isValidForRefund(
+                    IDOToken,
+                    identifier,
+                    account_,
+                    claimRefundData_[i].KPIIndices,
+                    claimRefundData_[i].data
+                ),
+                "BRC:I"
+            );
 
-            uint256 amountInBuyToken = _calculateRefundAmountInBuyToken(
-                token,
+            uint8[] calldata KPIIndices = claimRefundData_[i].KPIIndices;
+            (uint256 amountInBuyToken, uint256[] memory amountsByKPIInIDOToken) = _calculateRefundAmount(
+                IDOToken,
                 identifier,
                 account_,
+                KPIIndices,
                 claimRefundData_[i].data
             );
             if (amountInBuyToken == 0) {
                 continue;
             }
 
-            IERC20(token).safeTransfer(account_, amountInBuyToken);
-            refundClaimedInBuyToken[token][identifier][account_] += amountInBuyToken;
+            uint256 length = amountsByKPIInIDOToken.length;
+            for (uint256 j; j < length; ++j) {
+                uint256 amountByKPIInIDOToken = amountsByKPIInIDOToken[j];
+                if (amountByKPIInIDOToken > 0) {
+                    refundClaimedByKPIInIDOToken[IDOToken][identifier][account_][
+                        KPIIndices[j]
+                    ] += amountByKPIInIDOToken;
+                }
+            }
 
-            emit ClaimRefund(msg.sender, token, identifier, account_, amountInBuyToken);
+            address buyToken = IRefundIDO(identifier).buyToken();
+            uint256 balance = IERC20(buyToken).balanceOf(account_);
+            IERC20(buyToken).safeTransfer(account_, amountInBuyToken);
+            uint256 newBalance = IERC20(buyToken).balanceOf(account_);
+            uint256 receivedAmountInBuyToken = newBalance >= balance ? newBalance - balance : amountInBuyToken;
+
+            emit ClaimRefund(msg.sender, IDOToken, identifier, account_, amountInBuyToken, receivedAmountInBuyToken);
         }
-    }
-
-    /**
-     * @notice Calculate amount, which we should return to user
-     * @param token_ - buy token, can't be zero address
-     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
-     * @param account_ - user's address
-     * @param data_ - specific data (different for one- and multi- chain refunds)
-     * @return amount - calculated amount (in buy token)
-     */
-    function _calculateRefundAmountInBuyToken(
-        address token_,
-        address identifier_,
-        address account_,
-        bytes calldata data_
-    ) private view returns (uint256) {
-        uint256 pricePerTokenInUQ = IRefundIDO(identifier_).pricePerTokenInUQ();
-        uint256 amountInBuyToken = (_getRefundAmountInIDOToken(token_, identifier_, account_, data_) *
-            pricePerTokenInUQ) / UQ112x112.Q112;
-
-        uint256 totalRefundClaimedInBuyToken = refundClaimedInBuyToken[token_][identifier_][account_];
-        if (amountInBuyToken <= totalRefundClaimedInBuyToken) {
-            return 0;
-        }
-
-        return amountInBuyToken - totalRefundClaimedInBuyToken;
     }
 }

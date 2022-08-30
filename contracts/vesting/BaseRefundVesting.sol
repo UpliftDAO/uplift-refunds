@@ -41,6 +41,8 @@ abstract contract BaseRefundVesting is
         bytes calldata
     ) external virtual;
 
+    function addTokenInfo(InitializeInfo calldata, bytes calldata) external virtual override;
+
     function setRefund(
         address token_,
         address identifier_,
@@ -52,9 +54,12 @@ abstract contract BaseRefundVesting is
     function withdraw(address token_, address identifier_) external override nonReentrant {
         uint256 availableForWithdrawInIDOTokens = withdrawableOf(token_, identifier_, msg.sender);
         require(availableForWithdrawInIDOTokens > 0, "BRV:Z");
-        IERC20(token_).safeTransfer(msg.sender, availableForWithdrawInIDOTokens);
         claimed[token_][identifier_][msg.sender] += availableForWithdrawInIDOTokens;
-        emit Withdraw(token_, identifier_, msg.sender, availableForWithdrawInIDOTokens);
+        uint256 balance = IERC20(token_).balanceOf(msg.sender);
+        IERC20(token_).safeTransfer(msg.sender, availableForWithdrawInIDOTokens);
+        uint256 newBalance = IERC20(token_).balanceOf(msg.sender);
+        uint256 receivedAmountInIDOTokens = newBalance >= balance ? newBalance - balance : 0;
+        emit Withdraw(token_, identifier_, msg.sender, availableForWithdrawInIDOTokens, receivedAmountInIDOTokens);
     }
 
     function withdrawableOf(

@@ -24,20 +24,24 @@ interface IBaseRefundRequester {
         uint64 multiplierInBP;
         bool isFullRefund;
         bool isRefundable;
+        bool isClaimable;
     }
 
     /**
      * @notice Account model
      * refundRequestedInToken - how many tokens user requested for refund (total without multiplier)
-     * refundRequestedWithMultiplierInToken - how many tokens user requested for refund (total with multiplier)
      * claimedRefundRequestedInToken - how many tokens user requested for refund and which was bringed by user itself
      * refundRequestedByKPIInToken - how many tokens user requested for refund (for each KPI without multiplier)
+     * refundRequestedWithMultiplierByKPIInToken - how many tokens user requested for refund (for each KPI with multiplier)
+     * actualRefundRequestedWithMultiplierByKPIInToken - how many tokens user requested for refund (for each KPI without multiplier). Each index represent KPI's number.
+     * May differ from refundRequestedByKPIInToken for deflationary tokens. Should be used for any external calls
      */
     struct AccountInfo {
         uint256 refundRequestedInToken;
-        uint256 refundRequestedWithMultiplierInToken;
         uint256 claimedRefundRequestedInToken;
         mapping(uint8 => uint256) refundRequestedByKPIInToken;
+        mapping(uint8 => uint256) refundRequestedWithMultiplierByKPIInToken;
+        mapping(uint8 => uint256) actualRefundRequestedWithMultiplierByKPIInToken;
     }
 
     /**
@@ -81,15 +85,17 @@ interface IBaseRefundRequester {
     /**
      * @notice Return info for account
      * refundRequestedInToken - how many tokens user requested for refund (total without multiplier)
-     * refundRequestedWithMultiplierInToken - how many tokens user requested for refund (total with multiplier)
      * claimedRefundRequestedInToken - how many tokens user requested for refund and which was bringed by user itself
      * refundRequestedByKPIInToken - how many tokens user requested for refund (for each KPI without multiplier). Each index represent KPI's number
+     * actualRefundRequestedWithMultiplierByKPIInToken - how many tokens user requested for refund (for each KPI without multiplier). Each index represent KPI's number.
+     * May differ from refundRequestedByKPIInToken for deflationary tokens. Should be used for any external calls
      */
     struct ReturnAccountInfo {
         uint256 refundRequestedInToken;
-        uint256 refundRequestedWithMultiplierInToken;
         uint256 claimedRefundRequestedInToken;
         uint256[] refundRequestedByKPIInToken;
+        uint256[] refundRequestedWithMultiplierByKPIInToken;
+        uint256[] actualRefundRequestedWithMultiplierByKPIInToken;
     }
 
     /**
@@ -132,6 +138,20 @@ interface IBaseRefundRequester {
         address token_,
         address identifier_,
         address projectFundsHolder_
+    ) external;
+
+    /**
+     * @notice Set KPI as claimable
+     * @param token_ - refunded token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param KPIIndex_ - KPI's index
+     * @param isClaimable_ - is claimable KPI
+     */
+    function setClaimableKPI(
+        address token_,
+        address identifier_,
+        uint8 KPIIndex_,
+        bool isClaimable_
     ) external;
 
     /**
@@ -200,13 +220,17 @@ interface IBaseRefundRequester {
      */
     event SetProjectFundsHolder(address indexed token, address indexed identifier, address projectFundsHolder);
     /**
-     * @dev Emitted when KPI's refundable starus changes
+     * @dev Emitted when KPI's refundable status changes
      */
     event SetRefundable(address indexed token, address indexed identifier, uint8 index, bool isRefundable);
     /**
      * @dev Emitted when project's precision is added
      */
     event SetBPPrecision(address indexed token, address indexed identifier, uint64 bpPrecision);
+    /**
+     * @dev Emitted when KPI's claimable status changes
+     */
+    event SetClaimableKPI(address indexed token, address indexed identifier, uint8 KPIIndex, bool isClaimable);
     /**
      * @dev Emitted when user requests for refund
      * amountToRefundInToken - total refunded
@@ -217,6 +241,7 @@ interface IBaseRefundRequester {
         address indexed identifier,
         address indexed account,
         uint256 amountToRefundInToken,
+        uint256 actualAmountToRefundInToken,
         uint256 payedClaimedAmountInToken,
         uint8 kpiIndex
     );

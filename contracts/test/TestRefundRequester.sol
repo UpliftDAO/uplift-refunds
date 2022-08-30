@@ -17,6 +17,7 @@ contract TestRefundRequester is IBaseRefundRequester, ERC165 {
     mapping(address => mapping(address => uint256)) public claimedRefundRequested;
     mapping(address => mapping(address => uint256)) public refundRequested;
     mapping(address => mapping(address => mapping(uint8 => uint256))) public refundRequestedByKPI;
+    mapping(address => mapping(address => mapping(uint8 => uint256))) public actualRefundRequestedByKPI;
 
     constructor(KPI[] memory KPIs_, address token_) {
         for (uint256 i; i < KPIs_.length; ++i) {
@@ -49,6 +50,15 @@ contract TestRefundRequester is IBaseRefundRequester, ERC165 {
         KPI calldata KPI_
     ) external {}
 
+    function setClaimableKPI(
+        address,
+        address,
+        uint8 KPIIndex_,
+        bool isClaimable_
+    ) external {
+        KPIs[KPIIndex_].isClaimable = isClaimable_;
+    }
+
     function requestRefund(
         address,
         address,
@@ -59,11 +69,13 @@ contract TestRefundRequester is IBaseRefundRequester, ERC165 {
 
     function testRequestRefund(
         uint256 returnClaimed_,
+        uint256 actualReturnClaimed_,
         address identifier_,
         bool isReturn_
     ) external {
         refundRequested[identifier_][msg.sender] += returnClaimed_;
         refundRequestedByKPI[identifier_][msg.sender][currentKPIIndex] += returnClaimed_;
+        actualRefundRequestedByKPI[identifier_][msg.sender][currentKPIIndex] += actualReturnClaimed_;
         if (isReturn_) {
             claimedRefundRequested[identifier_][msg.sender] += returnClaimed_;
             IERC20(token).safeTransferFrom(msg.sender, address(this), returnClaimed_);
@@ -77,8 +89,18 @@ contract TestRefundRequester is IBaseRefundRequester, ERC165 {
     ) external view returns (ReturnRefundInfo memory info) {
         info.KPIs = KPIs;
         info.accountInfoOf.refundRequestedInToken = refundRequested[identifier_][account_];
-        info.accountInfoOf.refundRequestedWithMultiplierInToken = refundRequested[identifier_][account_];
         info.accountInfoOf.claimedRefundRequestedInToken = claimedRefundRequested[identifier_][account_];
+        uint256 length = KPIs.length;
+        info.accountInfoOf.refundRequestedWithMultiplierByKPIInToken = new uint256[](length);
+        info.accountInfoOf.actualRefundRequestedWithMultiplierByKPIInToken = new uint256[](length);
+        for (uint256 i; i < length; ++i) {
+            info.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[i] = refundRequestedByKPI[identifier_][
+                account_
+            ][uint8(i)];
+            info.accountInfoOf.actualRefundRequestedWithMultiplierByKPIInToken[i] = actualRefundRequestedByKPI[
+                identifier_
+            ][account_][uint8(i)];
+        }
     }
 
     function supportsInterface(bytes4 interfaceId_) public view virtual override returns (bool) {

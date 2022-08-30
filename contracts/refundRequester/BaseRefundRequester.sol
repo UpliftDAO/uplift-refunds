@@ -94,6 +94,18 @@ abstract contract BaseRefundRequester is
     /**
      * @inheritdoc IBaseRefundRequester
      */
+    function setClaimableKPI(
+        address token_,
+        address identifier_,
+        uint8 KPIIndex_,
+        bool isClaimable_
+    ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+        _setClaimableKPI(token_, identifier_, KPIIndex_, isClaimable_);
+    }
+
+    /**
+     * @inheritdoc IBaseRefundRequester
+     */
     function requestRefund(
         address token_,
         address identifier_,
@@ -112,7 +124,7 @@ abstract contract BaseRefundRequester is
         );
 
         // Get account data
-        uint256 refundAmountInToken = _calculateRefundAmountInToken(
+        (uint256 refundAmountInToken, uint256 actualRefundAmountInToken) = _calculateRefundAmountInToken(
             token_,
             identifier_,
             msg.sender,
@@ -136,13 +148,22 @@ abstract contract BaseRefundRequester is
             identifier_,
             msg.sender,
             refundAmountInToken,
+            actualRefundAmountInToken,
             refundInToken_,
             refundInfo.bpPrecision,
             refundKPI.multiplierInBP,
             KPIIndex_
         );
 
-        emit RequestRefund(token_, identifier_, msg.sender, refundAmountInToken, refundInToken_, KPIIndex_);
+        emit RequestRefund(
+            token_,
+            identifier_,
+            msg.sender,
+            refundAmountInToken,
+            actualRefundAmountInToken,
+            refundInToken_,
+            KPIIndex_
+        );
     }
 
     /**
@@ -163,14 +184,19 @@ abstract contract BaseRefundRequester is
         // Account info
         AccountInfo storage accountInfo = refundInfo.accountInfoOf[account_];
         info.accountInfoOf.refundRequestedInToken = accountInfo.refundRequestedInToken;
-        info.accountInfoOf.refundRequestedWithMultiplierInToken = accountInfo.refundRequestedWithMultiplierInToken;
         info.accountInfoOf.claimedRefundRequestedInToken = accountInfo.claimedRefundRequestedInToken;
         info.accountInfoOf.refundRequestedByKPIInToken = new uint256[](KPIs_.length);
+        info.accountInfoOf.refundRequestedWithMultiplierByKPIInToken = new uint256[](KPIs_.length);
+        info.accountInfoOf.actualRefundRequestedWithMultiplierByKPIInToken = new uint256[](KPIs_.length);
 
         // Populate arrays
         for (uint8 i; i < KPIs_.length; ++i) {
             info.totalRefundRequestedByKPI[i] = refundInfo.totalRefundRequestedByKPI[i];
             info.accountInfoOf.refundRequestedByKPIInToken[i] = accountInfo.refundRequestedByKPIInToken[i];
+            info.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[i] = accountInfo
+                .refundRequestedWithMultiplierByKPIInToken[i];
+            info.accountInfoOf.actualRefundRequestedWithMultiplierByKPIInToken[i] = accountInfo
+                .actualRefundRequestedWithMultiplierByKPIInToken[i];
         }
     }
 
@@ -372,11 +398,31 @@ abstract contract BaseRefundRequester is
     }
 
     /**
+     * @notice Set KPI as claimable
+     * @param token_ - refunded token, can't be zero address
+     * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
+     * @param KPIIndex_ - KPI's index
+     * @param isClaimable_ - is claimable KPI
+     */
+    function _setClaimableKPI(
+        address token_,
+        address identifier_,
+        uint8 KPIIndex_,
+        bool isClaimable_
+    ) private {
+        KPI storage KPI_ = refundInfoOf[token_][identifier_].KPIs[KPIIndex_];
+        require(block.timestamp >= KPI_.dateRequestEnd && KPI_.isRefundable, "BRR:I");
+        KPI_.isClaimable = isClaimable_;
+        emit SetClaimableKPI(token_, identifier_, KPIIndex_, isClaimable_);
+    }
+
+    /**
      * @notice Update refund info after successful refund claim
      * @param token_ - refunded token, can't be zero address
      * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
      * @param account_ - account address
      * @param amountToRefundInToken_ - amount of tokens that we should refund to user
+     * @param actualAmountToRefundInToken_ - actual amount of tokens that we should refund to user (in case of deflationary tokens)
      * @param refundInToken_ - amount of tokens that user brings to the SC (which was already claimed)
      * @param bpPrecision_ - refund's BP precision
      * @param multiplierInBP_ - refund's multiplier
@@ -387,6 +433,7 @@ abstract contract BaseRefundRequester is
         address identifier_,
         address account_,
         uint256 amountToRefundInToken_,
+        uint256 actualAmountToRefundInToken_,
         uint256 refundInToken_,
         uint64 bpPrecision_,
         uint64 multiplierInBP_,
@@ -394,9 +441,14 @@ abstract contract BaseRefundRequester is
     ) private {
         AccountInfo storage accountInfo = refundInfoOf[token_][identifier_].accountInfoOf[account_];
         accountInfo.refundRequestedInToken += amountToRefundInToken_;
-        accountInfo.refundRequestedWithMultiplierInToken += (amountToRefundInToken_ * multiplierInBP_) / bpPrecision_;
         accountInfo.claimedRefundRequestedInToken += refundInToken_;
         accountInfo.refundRequestedByKPIInToken[KPIIndex_] += amountToRefundInToken_;
+        accountInfo.refundRequestedWithMultiplierByKPIInToken[KPIIndex_] +=
+            (amountToRefundInToken_ * multiplierInBP_) /
+            bpPrecision_;
+        accountInfo.actualRefundRequestedWithMultiplierByKPIInToken[KPIIndex_] +=
+            (actualAmountToRefundInToken_ * multiplierInBP_) /
+            bpPrecision_;
 
         refundInfoOf[token_][identifier_].totalRefundRequestedByKPI[KPIIndex_] += amountToRefundInToken_;
     }
@@ -411,6 +463,7 @@ abstract contract BaseRefundRequester is
      * @param currentKPIIndex_ - current KPI's index
      * @param payload_ - custom data
      * @return amountToRefundInToken amount to refund (in tokens)
+     * @return actualAmountToRefundInToken - actual amount to refund (in tokens) - will be different for diflationary tokens
      */
     function _calculateRefundAmountInToken(
         address token_,
@@ -420,7 +473,7 @@ abstract contract BaseRefundRequester is
         uint64 currentKPITotalPercentInBP_,
         uint8 currentKPIIndex_,
         bytes calldata payload_
-    ) private returns (uint256 amountToRefundInToken) {
+    ) private returns (uint256 amountToRefundInToken, uint256 actualAmountToRefundInToken) {
         uint256 total_ = _getPurchasedAmountInToken(identifier_, msg.sender, payload_);
         require(total_ > 0, "BRR:I");
         RefundInfo storage refundInfo = refundInfoOf[token_][identifier_];
@@ -436,20 +489,60 @@ abstract contract BaseRefundRequester is
         uint256 refundRequestedByKPIInToken = refundInfo.accountInfoOf[account_].refundRequestedByKPIInToken[
             currentKPIIndex_
         ];
-        _handleBroughtTokens(
-            token_,
-            refundInfo.projectFundsHolder,
-            refundInToken_,
-            claimedForCurrentKPIInToken,
-            refundRequestedByKPIInToken
-        );
 
+        return
+            _calculateRefundAmountsInToken(
+                token_,
+                refundInfo.projectFundsHolder,
+                refundInfo.bpPrecision,
+                refundInToken_,
+                claimedForCurrentKPIInToken,
+                refundRequestedByKPIInToken,
+                total_,
+                currentKPIPercentInBP
+            );
+    }
+
+    /**
+     * @notice Calculate how many tokens we should refund to account
+     * @param token_ - refunded token, can't be zero address
+     * @param projectFundsHolder_ - account who receives all tokens
+     * @param bpPrecision_ - project's BP precision
+     * @param refundInToken_ - amount of tokens that user brings to the SC (which was already claimed)
+     * @param claimedForCurrentKPIInToken_ - amount of tokens that user already claimed for current KPI
+     * @param refundRequestedByKPIInToken_ - how many tokens user requested for refund (for specific KPI without multiplier)
+     * @param total_ - total purchased amount (in tokens)
+     * @param currentKPIPercentInBP_ - current KPI's percent in BP
+     * @return amountToRefundInToken - amount to refund (in tokens)
+     * @return actualAmountToRefundInToken - actual amount to refund (in tokens) - will be different for diflationary tokens
+     */
+    function _calculateRefundAmountsInToken(
+        address token_,
+        address projectFundsHolder_,
+        uint64 bpPrecision_,
+        uint256 refundInToken_,
+        uint256 claimedForCurrentKPIInToken_,
+        uint256 refundRequestedByKPIInToken_,
+        uint256 total_,
+        uint256 currentKPIPercentInBP_
+    ) private returns (uint256 amountToRefundInToken, uint256 actualAmountToRefundInToken) {
+        uint256 actualRefundedInToken = _handleBroughtTokens(
+            token_,
+            projectFundsHolder_,
+            refundInToken_,
+            claimedForCurrentKPIInToken_,
+            refundRequestedByKPIInToken_
+        );
         // Calculate refund amount
-        uint256 maxRefundForKPIInToken = (total_ * currentKPIPercentInBP) / refundInfo.bpPrecision;
+        uint256 maxRefundForKPIInToken = (total_ * currentKPIPercentInBP_) / bpPrecision_;
         // Refund only brought tokens if refund request exists
-        amountToRefundInToken = refundRequestedByKPIInToken > 0
+        amountToRefundInToken = refundRequestedByKPIInToken_ > 0
             ? refundInToken_
-            : maxRefundForKPIInToken + refundInToken_ - claimedForCurrentKPIInToken;
+            : maxRefundForKPIInToken + refundInToken_ - claimedForCurrentKPIInToken_;
+        // Will be less than amountToRefundInToken because actualRefundedInToken will be less than refundInToken_ (for deflationary token)
+        actualAmountToRefundInToken = refundRequestedByKPIInToken_ > 0
+            ? actualRefundedInToken
+            : maxRefundForKPIInToken + actualRefundedInToken - claimedForCurrentKPIInToken_;
     }
 
     /**
@@ -497,6 +590,7 @@ abstract contract BaseRefundRequester is
      * @param refundInToken_ - amount of tokens that user brings to the SC (which was already claimed)
      * @param claimedForCurrentKPIInToken_ - amount of tokens that user already claimed for current KPI
      * @param refundedForCurrentKPI_ - amount of tokens that was already refunded for current KPI
+     * @return actualRefundedInToken - actual amount that user bring to the SC (can be different for deflationary tokens)
      */
     function _handleBroughtTokens(
         address token_,
@@ -504,12 +598,17 @@ abstract contract BaseRefundRequester is
         uint256 refundInToken_,
         uint256 claimedForCurrentKPIInToken_,
         uint256 refundedForCurrentKPI_
-    ) private {
+    ) private returns (uint256 actualRefundedInToken) {
         if (refundInToken_ == 0) {
-            return;
+            return 0;
         }
         require(refundInToken_ <= claimedForCurrentKPIInToken_ - refundedForCurrentKPI_, "BRR:I");
+        uint256 balance = IERC20(token_).balanceOf(projectFundsHolder_);
         IERC20(token_).safeTransferFrom(msg.sender, projectFundsHolder_, refundInToken_);
+        uint256 newBalance = IERC20(token_).balanceOf(projectFundsHolder_);
+        if (newBalance > balance) {
+            actualRefundedInToken = newBalance - balance;
+        }
     }
 
     /**

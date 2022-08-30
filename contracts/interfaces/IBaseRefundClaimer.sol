@@ -11,11 +11,23 @@ interface IBaseRefundClaimer {
      * @param token - buy token, can't be zero address
      * @param identifier - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
      * @param data - custom data, which can be different for different types (one- and multi- chain)
+     * @param KPIIndices - array of KPI indices, which will be claimed
      */
     struct ClaimRefundData {
         address token;
         address identifier;
         bytes data;
+        uint8[] KPIIndices;
+    }
+
+    /**
+     * @notice Info struct
+     * @param KPIIndex - index of corresponding KPI
+     * @param refundClaimedByKPIInIDOToken - claimed refund (in IDO token)
+     */
+    struct RefundClaimedInfoOfData {
+        uint8 KPIIndex;
+        uint256 refundClaimedByKPIInIDOToken;
     }
 
     /**
@@ -32,17 +44,19 @@ interface IBaseRefundClaimer {
     function claimRefundForAccount(address account_, ClaimRefundData[] calldata claimRefundData_) external;
 
     /**
-     * @notice Amount of already claimed buy tokens (for account)
+     * @notice Amounts of already claimed in IDO tokens (for account)
      * @param token_ - buy token, can't be zero address
      * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
      * @param account_ - user's address
-     * @return amount - claimed amount
+     * @param KPIIndices_ - array of KPI indices
+     * @return amount - claimed amount in buy token
      */
-    function refundClaimedInBuyToken(
+    function infoOf(
         address token_,
         address identifier_,
-        address account_
-    ) external view returns (uint256);
+        address account_,
+        uint8[] calldata KPIIndices_
+    ) external view returns (RefundClaimedInfoOfData[] memory);
 
     /**
      * @dev Emitted when user claimed refunds
@@ -52,6 +66,7 @@ interface IBaseRefundClaimer {
         address indexed token,
         address indexed identifier,
         address indexed account,
-        uint256 amount
+        uint256 amount,
+        uint256 receivedAmount
     );
 }

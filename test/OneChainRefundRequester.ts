@@ -22,6 +22,8 @@ import {
 } from '../typechain'
 import { days, hours } from '../utils/time'
 import { expandTo18Decimals, latestBlockTimestamp, mineBlockAtTime, toUQ112 } from '../utils/utilities'
+import { TestDeflationaryERC20__factory } from './../typechain/factories/TestDeflationaryERC20__factory'
+import { TestDeflationaryERC20 } from './../typechain/TestDeflationaryERC20.d'
 
 describe('OneChainRefundRequester', () => {
   let owner: SignerWithAddress
@@ -59,6 +61,7 @@ describe('OneChainRefundRequester', () => {
     multiplierInBP: number
     isFullRefund: boolean
     isRefundable: boolean
+    isClaimable: boolean
   }
 
   type InitializeVestingInfo = {
@@ -95,7 +98,7 @@ describe('OneChainRefundRequester', () => {
     // Mock IDO
     ido = await new TestRefundIDO__factory(owner).deploy()
     const priceTokenPerBuyTokenInUQ = toUQ112(userAmountInBuyToken).div(userAmountInIDOToken)
-    await ido.setBaseInfo(referralPool.address, priceTokenPerBuyTokenInUQ)
+    await ido.setBaseInfo(referralPool.address, priceTokenPerBuyTokenInUQ, IDOToken.address)
     await ido.addAccount(user.address, userAmountInIDOToken, referrer.address, defaultReferrer.address)
 
     // Vesting
@@ -127,7 +130,8 @@ describe('OneChainRefundRequester', () => {
         percentInBP: 0,
         multiplierInBP: BP,
         isFullRefund: true,
-        isRefundable: true
+        isRefundable: true,
+        isClaimable: true
       },
       {
         dateRequestStart: vestingDates[0],
@@ -135,7 +139,8 @@ describe('OneChainRefundRequester', () => {
         percentInBP: vestingPercentage * 2,
         multiplierInBP: BP,
         isFullRefund: false,
-        isRefundable: true
+        isRefundable: true,
+        isClaimable: true
       },
       {
         dateRequestStart: vestingDates[1],
@@ -143,7 +148,8 @@ describe('OneChainRefundRequester', () => {
         percentInBP: vestingPercentage * 3,
         multiplierInBP: BP,
         isFullRefund: false,
-        isRefundable: true
+        isRefundable: true,
+        isClaimable: true
       },
       {
         dateRequestStart: vestingDates[2],
@@ -151,7 +157,8 @@ describe('OneChainRefundRequester', () => {
         percentInBP: BP,
         multiplierInBP: BP,
         isFullRefund: false,
-        isRefundable: true
+        isRefundable: true,
+        isClaimable: true
       }
     ]
     refund = await new OneChainRefundRequester__factory(owner).deploy()
@@ -213,7 +220,6 @@ describe('OneChainRefundRequester', () => {
 
       // Check account Info Of
       expect(info.accountInfoOf.refundRequestedInToken).to.eq(0)
-      expect(info.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(0)
       expect(info.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
       expect(info.accountInfoOf.refundRequestedByKPIInToken.length).to.eq(KPIs.length)
 
@@ -399,6 +405,28 @@ describe('OneChainRefundRequester', () => {
     })
   })
 
+  describe('setClaimableKPI', () => {
+    it('setClaimableKPI:forbidden', async () => {
+      await expect(refund.connect(user).setClaimableKPI(IDOToken.address, ido.address, 0, true)).to.revertedWith(
+        'BRC:F'
+      )
+    })
+
+    it('setClaimableKPI:KPI has not ended', async () => {
+      await expect(refund.setClaimableKPI(IDOToken.address, ido.address, 0, false)).to.revertedWith('BRR:I')
+    })
+
+    it('setClaimableKPI:successfully set true', async () => {
+      const kpiIndex = 2
+      await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestEnd)
+      await expect(refund.setClaimableKPI(IDOToken.address, ido.address, kpiIndex, true))
+        .to.emit(refund, 'SetClaimableKPI')
+        .withArgs(IDOToken.address, ido.address, 2, true)
+      const info = await refund.infoOf(IDOToken.address, ido.address, user.address)
+      expect(info.KPIs[kpiIndex].isClaimable).to.eq(true)
+    })
+  })
+
   describe('setRefundable', () => {
     it('setRefundable:forbidden', async () => {
       await expect(refund.connect(user).setRefundable(IDOToken.address, ido.address, 0, true)).to.revertedWith('BRC:F')
@@ -562,7 +590,8 @@ describe('OneChainRefundRequester', () => {
           percentInBP: 0,
           multiplierInBP: bpPrecision,
           isFullRefund: true,
-          isRefundable: true
+          isRefundable: true,
+          isClaimable: true
         },
         {
           dateRequestStart: vestingDates[0],
@@ -570,7 +599,8 @@ describe('OneChainRefundRequester', () => {
           percentInBP: vestingPercentage * 2,
           multiplierInBP: bpPrecision,
           isFullRefund: false,
-          isRefundable: true
+          isRefundable: true,
+          isClaimable: true
         },
         {
           dateRequestStart: vestingDates[1],
@@ -578,7 +608,8 @@ describe('OneChainRefundRequester', () => {
           percentInBP: vestingPercentage * 3,
           multiplierInBP: bpPrecision,
           isFullRefund: false,
-          isRefundable: true
+          isRefundable: true,
+          isClaimable: true
         },
         {
           dateRequestStart: vestingDates[2],
@@ -586,7 +617,8 @@ describe('OneChainRefundRequester', () => {
           percentInBP: bpPrecision,
           multiplierInBP: bpPrecision,
           isFullRefund: false,
-          isRefundable: true
+          isRefundable: true,
+          isClaimable: true
         }
       ]
       refund = await new OneChainRefundRequester__factory(owner).deploy()
@@ -625,16 +657,25 @@ describe('OneChainRefundRequester', () => {
 
       await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, userBalanceInToken, 0, zeroData))
         .to.emit(refund, 'RequestRefund')
-        .withArgs(IDOToken.address, ido.address, user.address, userAmountInIDOToken, userBalanceInToken, 0)
+        .withArgs(
+          IDOToken.address,
+          ido.address,
+          user.address,
+          userAmountInIDOToken,
+          userAmountInIDOToken,
+          userBalanceInToken,
+          0
+        )
 
       expect(await IDOToken.balanceOf(user.address)).to.eq(0)
 
       // Check info
       const refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
       expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(userAmountInIDOToken)
-      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(userAmountInIDOToken)
       expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(userBalanceInToken)
       expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[0]).to.eq(userAmountInIDOToken)
+      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[0]).to.eq(userAmountInIDOToken)
+      expect(refundInfo.totalRefundRequestedByKPI[0]).to.eq(userAmountInIDOToken)
 
       // Try to claim tokens
       const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -674,16 +715,17 @@ describe('OneChainRefundRequester', () => {
 
       await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, 0, 0, zeroData))
         .to.emit(refund, 'RequestRefund')
-        .withArgs(IDOToken.address, ido.address, user.address, userAmountInIDOToken, 0, 0)
+        .withArgs(IDOToken.address, ido.address, user.address, userAmountInIDOToken, userAmountInIDOToken, 0, 0)
 
       expect(await IDOToken.balanceOf(user.address)).to.eq(userBalanceInToken)
 
       // Check info
       const refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
       expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(userAmountInIDOToken)
-      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(userAmountInIDOToken)
       expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
       expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[0]).to.eq(userAmountInIDOToken)
+      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[0]).to.eq(userAmountInIDOToken)
+      expect(refundInfo.totalRefundRequestedByKPI[0]).to.eq(userAmountInIDOToken)
 
       // Try to claim tokens
       const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -743,16 +785,25 @@ describe('OneChainRefundRequester', () => {
 
       await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, userBalanceInToken, 0, zeroData))
         .to.emit(refund, 'RequestRefund')
-        .withArgs(IDOToken.address, ido.address, user.address, userAmountInIDOToken, userBalanceInToken, 0)
+        .withArgs(
+          IDOToken.address,
+          ido.address,
+          user.address,
+          userAmountInIDOToken,
+          userAmountInIDOToken,
+          userBalanceInToken,
+          0
+        )
 
       expect(await IDOToken.balanceOf(user.address)).to.eq(0)
 
       // Check info
       const refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
       expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(userAmountInIDOToken)
-      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(userAmountInIDOToken)
       expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(userBalanceInToken)
       expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[0]).to.eq(userAmountInIDOToken)
+      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[0]).to.eq(userAmountInIDOToken)
+      expect(refundInfo.totalRefundRequestedByKPI[0]).to.eq(userAmountInIDOToken)
 
       // Try to claim tokens
       const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -776,16 +827,17 @@ describe('OneChainRefundRequester', () => {
 
       await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, 0, 0, zeroData))
         .to.emit(refund, 'RequestRefund')
-        .withArgs(IDOToken.address, ido.address, user.address, expectedRefund, 0, 0)
+        .withArgs(IDOToken.address, ido.address, user.address, expectedRefund, expectedRefund, 0, 0)
 
       expect(await IDOToken.balanceOf(user.address)).to.eq(claimedTokens)
 
       // Check info
       let refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
       expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(expectedRefund)
-      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(expectedRefund)
       expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
       expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[0]).to.eq(expectedRefund)
+      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[0]).to.eq(expectedRefund)
+      expect(refundInfo.totalRefundRequestedByKPI[0]).to.eq(expectedRefund)
 
       // Try to claim tokens
       const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -800,16 +852,17 @@ describe('OneChainRefundRequester', () => {
 
       await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, claimedTokens, 0, zeroData))
         .to.emit(refund, 'RequestRefund')
-        .withArgs(IDOToken.address, ido.address, user.address, claimedTokens, claimedTokens, 0)
+        .withArgs(IDOToken.address, ido.address, user.address, claimedTokens, claimedTokens, claimedTokens, 0)
 
       expect(await IDOToken.balanceOf(user.address)).to.eq(0)
 
       // Check info
       refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
       expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(userAmountInIDOToken)
-      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(userAmountInIDOToken)
       expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(claimedTokens)
       expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[0]).to.eq(userAmountInIDOToken)
+      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[0]).to.eq(userAmountInIDOToken)
+      expect(refundInfo.totalRefundRequestedByKPI[0]).to.eq(userAmountInIDOToken)
     })
 
     it('requestRefund:1st full refund:with claim in 3 tx', async () => {
@@ -830,7 +883,15 @@ describe('OneChainRefundRequester', () => {
 
       await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, refundClaimedTokens2, 0, zeroData))
         .to.emit(refund, 'RequestRefund')
-        .withArgs(IDOToken.address, ido.address, user.address, refundClaimedTokens2, refundClaimedTokens2, 0)
+        .withArgs(
+          IDOToken.address,
+          ido.address,
+          user.address,
+          refundClaimedTokens2,
+          refundClaimedTokens2,
+          refundClaimedTokens2,
+          0
+        )
 
       expect(await IDOToken.balanceOf(user.address)).to.eq(refundClaimedTokens3)
 
@@ -839,21 +900,31 @@ describe('OneChainRefundRequester', () => {
       // Check info
       let refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
       expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalExpectedRefund)
-      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalExpectedRefund)
       expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(refundClaimedTokens2)
       expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[0]).to.eq(totalExpectedRefund)
+      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[0]).to.eq(totalExpectedRefund)
+      expect(refundInfo.totalRefundRequestedByKPI[0]).to.eq(totalExpectedRefund)
 
       // User asks for refund 3
       await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, refundClaimedTokens3, 0, zeroData))
         .to.emit(refund, 'RequestRefund')
-        .withArgs(IDOToken.address, ido.address, user.address, refundClaimedTokens3, refundClaimedTokens3, 0)
+        .withArgs(
+          IDOToken.address,
+          ido.address,
+          user.address,
+          refundClaimedTokens3,
+          refundClaimedTokens3,
+          refundClaimedTokens3,
+          0
+        )
 
       // Check info
       refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
       expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(userAmountInIDOToken)
-      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(userAmountInIDOToken)
       expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(claimedTokens)
       expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[0]).to.eq(userAmountInIDOToken)
+      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[0]).to.eq(userAmountInIDOToken)
+      expect(refundInfo.totalRefundRequestedByKPI[0]).to.eq(userAmountInIDOToken)
 
       // Try to claim tokens
       const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -902,7 +973,7 @@ describe('OneChainRefundRequester', () => {
 
         await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, 0, i, zeroData))
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, amountInIDOToken, 0, i)
+          .withArgs(IDOToken.address, ido.address, user.address, amountInIDOToken, amountInIDOToken, 0, i)
 
         userTotalInIDOToken = userTotalInIDOToken.add(amountInIDOToken)
         expect(await IDOToken.balanceOf(user.address)).to.eq(userBalanceInToken)
@@ -910,9 +981,10 @@ describe('OneChainRefundRequester', () => {
         // Check info
         const refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(userTotalInIDOToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(userTotalInIDOToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[i]).to.eq(amountInIDOToken)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[i]).to.eq(amountInIDOToken)
+        expect(refundInfo.totalRefundRequestedByKPI[i]).to.eq(amountInIDOToken)
 
         // Try to claim tokens
         const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -950,7 +1022,43 @@ describe('OneChainRefundRequester', () => {
       await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address)).to.be.revertedWith('BRV:Z')
     })
 
-    it('requestRefund:refund 2 KPI:withdraw at the end', async () => {})
+    it('requestRefund:refund 2 KPI:withdraw at the end', async () => {
+      let kpiIndex = 1
+      await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+      await IDOToken.transfer(vesting.address, userAmountInIDOToken)
+
+      // User asks for refund
+      const userBalanceInToken = await IDOToken.balanceOf(user.address)
+      await IDOToken.connect(user).approve(refund.address, userAmountInIDOToken)
+
+      const amountInIDOToken = userAmountInIDOToken.div(2)
+      await expect(
+        refund.connect(user).requestRefund(IDOToken.address, ido.address, userBalanceInToken, kpiIndex, zeroData)
+      )
+        .to.emit(refund, 'RequestRefund')
+        .withArgs(
+          IDOToken.address,
+          ido.address,
+          user.address,
+          amountInIDOToken,
+          amountInIDOToken,
+          userBalanceInToken,
+          kpiIndex
+        )
+
+      expect(await IDOToken.balanceOf(user.address)).to.eq(0)
+
+      kpiIndex = 3
+      await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestEnd)
+      await vesting.connect(user).withdraw(IDOToken.address, ido.address)
+
+      const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
+      expect(vestingInfo.refundInfo.total).to.eq(userAmountInIDOToken)
+      expect(vestingInfo.refundInfo.totalClaimed).to.eq(amountInIDOToken)
+      expect(vestingInfo.refundInfo.withdrawableAmount).to.eq(0)
+
+      expect(await IDOToken.balanceOf(user.address)).to.eq(amountInIDOToken)
+    })
 
     it('requestRefund:refund not full refund KPIs:claim in 1 tx', async () => {
       let totalUserAmountInIDOToken = BigNumber.from(0)
@@ -975,7 +1083,15 @@ describe('OneChainRefundRequester', () => {
           refund.connect(user).requestRefund(IDOToken.address, ido.address, userBalanceInToken, kpiIndex, zeroData)
         )
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, amountInIDOToken, userBalanceInToken, kpiIndex)
+          .withArgs(
+            IDOToken.address,
+            ido.address,
+            user.address,
+            amountInIDOToken,
+            amountInIDOToken,
+            userBalanceInToken,
+            kpiIndex
+          )
         totalUserAmountInIDOToken = totalUserAmountInIDOToken.add(amountInIDOToken)
 
         expect(await IDOToken.balanceOf(user.address)).to.eq(0)
@@ -983,9 +1099,10 @@ describe('OneChainRefundRequester', () => {
         // Check info
         const refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalUserAmountInIDOToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalUserAmountInIDOToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(totalUserAmountInIDOToken)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(amountInIDOToken)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(amountInIDOToken)
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(amountInIDOToken)
 
         // Try to claim tokens
         const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -1034,7 +1151,15 @@ describe('OneChainRefundRequester', () => {
           refund.connect(user).requestRefund(IDOToken.address, ido.address, expectedRefund1, kpiIndex, zeroData)
         )
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, expectedRefund1, expectedRefund1, kpiIndex)
+          .withArgs(
+            IDOToken.address,
+            ido.address,
+            user.address,
+            expectedRefund1,
+            expectedRefund1,
+            expectedRefund1,
+            kpiIndex
+          )
         totalUserAmountInIDOToken = totalUserAmountInIDOToken.add(expectedRefund1)
 
         expect(await IDOToken.balanceOf(user.address)).to.eq(claimedTokens.sub(expectedRefund1))
@@ -1042,9 +1167,10 @@ describe('OneChainRefundRequester', () => {
         // Check info
         let refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalUserAmountInIDOToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalUserAmountInIDOToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(totalUserAmountInIDOToken)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(expectedRefund1)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(expectedRefund1)
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(expectedRefund1)
 
         // Try to claim tokens
         const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -1061,7 +1187,15 @@ describe('OneChainRefundRequester', () => {
           refund.connect(user).requestRefund(IDOToken.address, ido.address, expectedRefund2, kpiIndex, zeroData)
         )
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, expectedRefund2, expectedRefund2, kpiIndex)
+          .withArgs(
+            IDOToken.address,
+            ido.address,
+            user.address,
+            expectedRefund2,
+            expectedRefund2,
+            expectedRefund2,
+            kpiIndex
+          )
         totalUserAmountInIDOToken = totalUserAmountInIDOToken.add(expectedRefund2)
 
         expect(await IDOToken.balanceOf(user.address)).to.eq(0)
@@ -1069,9 +1203,10 @@ describe('OneChainRefundRequester', () => {
         // Check info
         refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalClaimedInIDOToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalClaimedInIDOToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(totalClaimedInIDOToken)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(claimedTokens)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(claimedTokens)
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(claimedTokens)
       }
     })
 
@@ -1114,7 +1249,15 @@ describe('OneChainRefundRequester', () => {
           refund.connect(user).requestRefund(IDOToken.address, ido.address, expectedRefund1, kpiIndex, zeroData)
         )
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, expectedRefund1, expectedRefund1, kpiIndex)
+          .withArgs(
+            IDOToken.address,
+            ido.address,
+            user.address,
+            expectedRefund1,
+            expectedRefund1,
+            expectedRefund1,
+            kpiIndex
+          )
         totalUserAmountInIDOToken = totalUserAmountInIDOToken.add(expectedRefund1)
         totalUserAmountForKPIInIDOToken = totalUserAmountForKPIInIDOToken.add(expectedRefund1)
 
@@ -1123,9 +1266,10 @@ describe('OneChainRefundRequester', () => {
         // Check info
         let refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalUserAmountInIDOToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalUserAmountInIDOToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(totalUserAmountInIDOToken)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(expectedRefund1)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(expectedRefund1)
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(expectedRefund1)
 
         // Try to claim tokens
         const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -1142,7 +1286,15 @@ describe('OneChainRefundRequester', () => {
           refund.connect(user).requestRefund(IDOToken.address, ido.address, expectedRefund2, kpiIndex, zeroData)
         )
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, expectedRefund2, expectedRefund2, kpiIndex)
+          .withArgs(
+            IDOToken.address,
+            ido.address,
+            user.address,
+            expectedRefund2,
+            expectedRefund2,
+            expectedRefund2,
+            kpiIndex
+          )
         totalUserAmountInIDOToken = totalUserAmountInIDOToken.add(expectedRefund2)
         totalUserAmountForKPIInIDOToken = totalUserAmountForKPIInIDOToken.add(expectedRefund2)
 
@@ -1151,9 +1303,12 @@ describe('OneChainRefundRequester', () => {
         // Check info
         refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalUserAmountInIDOToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalUserAmountInIDOToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(totalUserAmountInIDOToken)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(totalUserAmountForKPIInIDOToken)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(
+          totalUserAmountForKPIInIDOToken
+        )
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(totalUserAmountForKPIInIDOToken)
 
         // Refund other part of tokens
         await IDOToken.connect(user).approve(refund.address, expectedRefund3)
@@ -1162,7 +1317,15 @@ describe('OneChainRefundRequester', () => {
           refund.connect(user).requestRefund(IDOToken.address, ido.address, expectedRefund3, kpiIndex, zeroData)
         )
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, expectedRefund3, expectedRefund3, kpiIndex)
+          .withArgs(
+            IDOToken.address,
+            ido.address,
+            user.address,
+            expectedRefund3,
+            expectedRefund3,
+            expectedRefund3,
+            kpiIndex
+          )
         totalUserAmountInIDOToken = totalUserAmountInIDOToken.add(expectedRefund3)
 
         expect(await IDOToken.balanceOf(user.address)).to.eq(0)
@@ -1170,9 +1333,10 @@ describe('OneChainRefundRequester', () => {
         // Check info
         refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalClaimedInIDOToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalClaimedInIDOToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(totalClaimedInIDOToken)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(claimedTokens)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(claimedTokens)
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(claimedTokens)
       }
     })
 
@@ -1200,7 +1364,7 @@ describe('OneChainRefundRequester', () => {
 
       await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, 0, kpiIndex, zeroData))
         .to.emit(refund, 'RequestRefund')
-        .withArgs(IDOToken.address, ido.address, user.address, expectedRefund2, 0, kpiIndex)
+        .withArgs(IDOToken.address, ido.address, user.address, expectedRefund2, expectedRefund2, 0, kpiIndex)
       totalRefundRequestedInToken = totalRefundRequestedInToken.add(expectedRefund2)
 
       expect(await IDOToken.balanceOf(user.address)).to.eq(0)
@@ -1208,9 +1372,10 @@ describe('OneChainRefundRequester', () => {
       // Check info
       let refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
       expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalRefundRequestedInToken)
-      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalRefundRequestedInToken)
       expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
       expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(expectedRefund2)
+      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(expectedRefund2)
+      expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(expectedRefund2)
 
       // Try to claim tokens
       let vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -1231,9 +1396,10 @@ describe('OneChainRefundRequester', () => {
 
         refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalRefundRequestedInToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalRefundRequestedInToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(0)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(0)
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(0)
 
         vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
         expect(vestingInfo.refundInfo.total).to.eq(userAmountInIDOToken)
@@ -1253,7 +1419,15 @@ describe('OneChainRefundRequester', () => {
         refund.connect(user).requestRefund(IDOToken.address, ido.address, expectedRefund4, kpiIndex, zeroData)
       )
         .to.emit(refund, 'RequestRefund')
-        .withArgs(IDOToken.address, ido.address, user.address, expectedRefund4, expectedRefund4, kpiIndex)
+        .withArgs(
+          IDOToken.address,
+          ido.address,
+          user.address,
+          expectedRefund4,
+          expectedRefund4,
+          expectedRefund4,
+          kpiIndex
+        )
 
       totalRefundRequestedInToken = totalRefundRequestedInToken.add(expectedRefund4)
       // Tokens for the 3rd KPI
@@ -1263,9 +1437,10 @@ describe('OneChainRefundRequester', () => {
       // Check info
       refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
       expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalRefundRequestedInToken)
-      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalRefundRequestedInToken)
       expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(expectedRefund4)
       expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(expectedRefund4)
+      expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(expectedRefund4)
+      expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(expectedRefund4)
 
       // Vesting info
       vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -1288,7 +1463,7 @@ describe('OneChainRefundRequester', () => {
 
         await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, 0, kpiIndex, zeroData))
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, expectedRefund, 0, kpiIndex)
+          .withArgs(IDOToken.address, ido.address, user.address, expectedRefund, expectedRefund, 0, kpiIndex)
         totalRefundRequestedInToken = totalRefundRequestedInToken.add(expectedRefund)
 
         expect(await IDOToken.balanceOf(user.address)).to.eq(claimedTokens)
@@ -1296,9 +1471,10 @@ describe('OneChainRefundRequester', () => {
         // Check info
         const refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalRefundRequestedInToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalRefundRequestedInToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(expectedRefund)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(expectedRefund)
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(expectedRefund)
 
         // Vesting info
         const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -1339,7 +1515,15 @@ describe('OneChainRefundRequester', () => {
           refund.connect(user).requestRefund(IDOToken.address, ido.address, userBringAmountInToken, kpiIndex, zeroData)
         )
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, expectedRefund, userBringAmountInToken, kpiIndex)
+          .withArgs(
+            IDOToken.address,
+            ido.address,
+            user.address,
+            expectedRefund,
+            expectedRefund,
+            userBringAmountInToken,
+            kpiIndex
+          )
         totalRefundRequestedInToken = totalRefundRequestedInToken.add(expectedRefund)
 
         expect(await IDOToken.balanceOf(user.address)).to.eq(0)
@@ -1347,9 +1531,10 @@ describe('OneChainRefundRequester', () => {
         // Check info
         const refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalRefundRequestedInToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalRefundRequestedInToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(totalRefundRequestedInToken)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(expectedRefund)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(expectedRefund)
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(expectedRefund)
 
         // Vesting info
         const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -1359,6 +1544,16 @@ describe('OneChainRefundRequester', () => {
 
         await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address)).to.be.revertedWith('BRV:Z')
       }
+    })
+
+    it('requestRefund:request KPI is ended but is not refundable', async () => {
+      const kpiIndex = 3
+      const KPI = { ...KPIs[kpiIndex], isRefundable: false }
+      await refund.setKPI(IDOToken.address, ido.address, kpiIndex, KPI)
+      await mineBlockAtTime(ethers.provider, KPI.dateRequestEnd)
+      await expect(
+        refund.connect(user).requestRefund(IDOToken.address, ido.address, 0, kpiIndex, zeroData)
+      ).to.revertedWith('BRR:I')
     })
 
     describe('requestRefund:full refund:burn referral shares', () => {
@@ -1463,7 +1658,8 @@ describe('OneChainRefundRequester', () => {
           percentInBP: vestingPercentage,
           multiplierInBP: bpPrecision,
           isFullRefund: true,
-          isRefundable: true
+          isRefundable: true,
+          isClaimable: true
         }
 
         await refund.setKPI(IDOToken.address, ido.address, kpiIndex, KPIs[kpiIndex])
@@ -1496,7 +1692,15 @@ describe('OneChainRefundRequester', () => {
             refund.connect(user).requestRefund(IDOToken.address, ido.address, amountInIDOToken, kpiIndex, zeroData)
           )
             .to.emit(refund, 'RequestRefund')
-            .withArgs(IDOToken.address, ido.address, user.address, amountInIDOToken, amountInIDOToken, kpiIndex)
+            .withArgs(
+              IDOToken.address,
+              ido.address,
+              user.address,
+              amountInIDOToken,
+              amountInIDOToken,
+              amountInIDOToken,
+              kpiIndex
+            )
           totalUserAmountInIDOToken = totalUserAmountInIDOToken.add(amountInIDOToken)
 
           expect(await IDOToken.balanceOf(user.address)).to.eq(userBalanceInToken)
@@ -1504,9 +1708,10 @@ describe('OneChainRefundRequester', () => {
           // Check info
           const refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
           expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalUserAmountInIDOToken)
-          expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalUserAmountInIDOToken)
           expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(totalUserAmountInIDOToken)
           expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(amountInIDOToken)
+          expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(amountInIDOToken)
+          expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(amountInIDOToken)
 
           // Try to claim tokens
           const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -1541,7 +1746,7 @@ describe('OneChainRefundRequester', () => {
 
         await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, 0, kpiIndex, zeroData))
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, expectedRefund2, 0, kpiIndex)
+          .withArgs(IDOToken.address, ido.address, user.address, expectedRefund2, expectedRefund2, 0, kpiIndex)
         totalRefundRequestedInToken = totalRefundRequestedInToken.add(expectedRefund2)
 
         expect(await IDOToken.balanceOf(user.address)).to.eq(0)
@@ -1549,9 +1754,10 @@ describe('OneChainRefundRequester', () => {
         // Check info
         let refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalRefundRequestedInToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalRefundRequestedInToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(expectedRefund2)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(expectedRefund2)
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(expectedRefund2)
 
         // Try to claim tokens
         let vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -1572,9 +1778,10 @@ describe('OneChainRefundRequester', () => {
 
           refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
           expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalRefundRequestedInToken)
-          expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalRefundRequestedInToken)
           expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
           expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(0)
+          expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(0)
+          expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(0)
 
           vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
           expect(vestingInfo.refundInfo.total).to.eq(userAmountInIDOToken)
@@ -1594,7 +1801,15 @@ describe('OneChainRefundRequester', () => {
           refund.connect(user).requestRefund(IDOToken.address, ido.address, expectedRefund4, kpiIndex, zeroData)
         )
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, expectedRefund4, expectedRefund4, kpiIndex)
+          .withArgs(
+            IDOToken.address,
+            ido.address,
+            user.address,
+            expectedRefund4,
+            expectedRefund4,
+            expectedRefund4,
+            kpiIndex
+          )
 
         totalRefundRequestedInToken = totalRefundRequestedInToken.add(expectedRefund4)
         // Tokens for the 3rd KPI
@@ -1604,9 +1819,10 @@ describe('OneChainRefundRequester', () => {
         // Check info
         refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalRefundRequestedInToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(totalRefundRequestedInToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(expectedRefund4)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(expectedRefund4)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(expectedRefund4)
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(expectedRefund4)
 
         // Vesting info
         vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -1627,7 +1843,8 @@ describe('OneChainRefundRequester', () => {
             percentInBP: 0,
             multiplierInBP: bpPrecision,
             isFullRefund: true,
-            isRefundable: true
+            isRefundable: true,
+            isClaimable: true
           },
           {
             dateRequestStart: vestingDates[0],
@@ -1635,7 +1852,8 @@ describe('OneChainRefundRequester', () => {
             percentInBP: vestingPercentage * 2,
             multiplierInBP: multiplierInBP,
             isFullRefund: false,
-            isRefundable: true
+            isRefundable: true,
+            isClaimable: true
           },
           {
             dateRequestStart: vestingDates[1],
@@ -1643,7 +1861,8 @@ describe('OneChainRefundRequester', () => {
             percentInBP: vestingPercentage * 3,
             multiplierInBP: multiplierInBP,
             isFullRefund: false,
-            isRefundable: true
+            isRefundable: true,
+            isClaimable: true
           },
           {
             dateRequestStart: vestingDates[2],
@@ -1651,13 +1870,16 @@ describe('OneChainRefundRequester', () => {
             percentInBP: bpPrecision,
             multiplierInBP: multiplierInBP,
             isFullRefund: false,
-            isRefundable: true
+            isRefundable: true,
+            isClaimable: true
           }
         ]
 
         for (let i = 0; i < KPIs.length; i++) {
           await refund.setKPI(IDOToken.address, ido.address, i, KPIs[i])
         }
+
+        await ido.addAccount(user2.address, userAmountInIDOToken, referrer.address, defaultReferrer.address)
 
         userAmountInIDOTokenWithMultiplier = userAmountInIDOToken.mul(multiplierInBP).div(bpPrecision)
       })
@@ -1675,16 +1897,25 @@ describe('OneChainRefundRequester', () => {
 
         await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, userBalanceInToken, 0, zeroData))
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, userAmountInIDOToken, userBalanceInToken, 0)
+          .withArgs(
+            IDOToken.address,
+            ido.address,
+            user.address,
+            userAmountInIDOToken,
+            userAmountInIDOToken,
+            userBalanceInToken,
+            0
+          )
 
         expect(await IDOToken.balanceOf(user.address)).to.eq(0)
 
         // Check info
         const refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(userAmountInIDOToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(userAmountInIDOToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(userBalanceInToken)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[0]).to.eq(userAmountInIDOToken)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[0]).to.eq(userAmountInIDOToken)
+        expect(refundInfo.totalRefundRequestedByKPI[0]).to.eq(userAmountInIDOToken)
 
         // Try to claim tokens
         const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -1717,16 +1948,27 @@ describe('OneChainRefundRequester', () => {
           refund.connect(user).requestRefund(IDOToken.address, ido.address, amountInIDOToken, kpiIndex, zeroData)
         )
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, amountInIDOToken, amountInIDOToken, kpiIndex)
+          .withArgs(
+            IDOToken.address,
+            ido.address,
+            user.address,
+            amountInIDOToken,
+            amountInIDOToken,
+            amountInIDOToken,
+            kpiIndex
+          )
 
         expect(await IDOToken.balanceOf(user.address)).to.eq(userBalanceAfterRefundInToken)
 
         // Check info
         const refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(amountInIDOToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(amountWithMultiplierInIDOToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(amountInIDOToken)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(amountInIDOToken)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(
+          amountWithMultiplierInIDOToken
+        )
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(amountInIDOToken)
 
         // Try to claim tokens
         const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -1744,16 +1986,17 @@ describe('OneChainRefundRequester', () => {
 
         await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, 0, 0, zeroData))
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, userAmountInIDOToken, 0, 0)
+          .withArgs(IDOToken.address, ido.address, user.address, userAmountInIDOToken, userAmountInIDOToken, 0, 0)
 
         expect(await IDOToken.balanceOf(user.address)).to.eq(userBalanceInToken)
 
         // Check info
         const refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(userAmountInIDOToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(userAmountInIDOToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[0]).to.eq(userAmountInIDOToken)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[0]).to.eq(userAmountInIDOToken)
+        expect(refundInfo.totalRefundRequestedByKPI[0]).to.eq(userAmountInIDOToken)
 
         // Try to claim tokens
         const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
@@ -1779,22 +2022,610 @@ describe('OneChainRefundRequester', () => {
 
         await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, 0, kpiIndex, zeroData))
           .to.emit(refund, 'RequestRefund')
-          .withArgs(IDOToken.address, ido.address, user.address, amountInIDOToken, 0, kpiIndex)
+          .withArgs(IDOToken.address, ido.address, user.address, amountInIDOToken, amountInIDOToken, 0, kpiIndex)
 
         expect(await IDOToken.balanceOf(user.address)).to.eq(userBalanceInToken)
 
         // Check info
         const refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
         expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(amountInIDOToken)
-        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierInToken).to.eq(amountWithMultiplierInIDOToken)
         expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
         expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(amountInIDOToken)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(
+          amountWithMultiplierInIDOToken
+        )
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(amountInIDOToken)
 
         // Try to claim tokens
         const vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
         expect(vestingInfo.refundInfo.total).to.eq(userAmountInIDOToken)
         expect(vestingInfo.refundInfo.totalClaimed).to.eq(0)
         expect(vestingInfo.refundInfo.withdrawableAmount).to.eq(withdrawableAmount)
+      })
+
+      it('requestRefund:refund with multiplier:2 users:refund 2 KPI no claim:claim 3 and 4 KPIs:refund 4 KPI', async () => {
+        let totalClaimedInIDOToken = BigNumber.from(0)
+        let totalRefundRequestedInToken = BigNumber.from(0)
+
+        let kpiIndex = 1
+        await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+
+        const prevKPI = KPIs[kpiIndex - 1]
+        let percentInBP = KPIs[kpiIndex].percentInBP
+        if (!prevKPI.isFullRefund) {
+          percentInBP = percentInBP - prevKPI.percentInBP
+        }
+
+        await IDOToken.transfer(vesting.address, userAmountInIDOToken)
+
+        // User asks for refund on KPI 2
+        let claimedTokens = await IDOToken.balanceOf(user.address)
+        totalClaimedInIDOToken = totalClaimedInIDOToken.add(claimedTokens)
+
+        const expectedRefund2 = userAmountInIDOToken.mul(percentInBP).div(bpPrecision)
+        await IDOToken.connect(user).approve(refund.address, expectedRefund2)
+        await IDOToken.connect(user2).approve(refund.address, expectedRefund2)
+
+        await expect(refund.connect(user).requestRefund(IDOToken.address, ido.address, 0, kpiIndex, zeroData))
+          .to.emit(refund, 'RequestRefund')
+          .withArgs(IDOToken.address, ido.address, user.address, expectedRefund2, expectedRefund2, 0, kpiIndex)
+        await expect(refund.connect(user2).requestRefund(IDOToken.address, ido.address, 0, kpiIndex, zeroData))
+          .to.emit(refund, 'RequestRefund')
+          .withArgs(IDOToken.address, ido.address, user2.address, expectedRefund2, expectedRefund2, 0, kpiIndex)
+        totalRefundRequestedInToken = totalRefundRequestedInToken.add(expectedRefund2)
+        const expectedRefund2WithMultiplier = expectedRefund2.mul(KPIs[kpiIndex].multiplierInBP).div(bpPrecision)
+        const totalRefundRequestedBy2KPI = expectedRefund2.add(expectedRefund2)
+
+        expect(await IDOToken.balanceOf(user.address)).to.eq(0)
+
+        // Check info
+        let refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
+        expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalRefundRequestedInToken)
+        expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
+        expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(expectedRefund2)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(
+          expectedRefund2WithMultiplier
+        )
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(totalRefundRequestedBy2KPI)
+
+        // Try to claim tokens
+        let vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
+        expect(vestingInfo.refundInfo.total).to.eq(userAmountInIDOToken)
+        expect(vestingInfo.refundInfo.totalClaimed).to.eq(totalClaimedInIDOToken)
+        expect(vestingInfo.refundInfo.withdrawableAmount).to.eq(0)
+
+        await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address)).to.be.revertedWith('BRV:Z')
+        await expect(vesting.connect(user2).withdraw(IDOToken.address, ido.address)).to.be.revertedWith('BRV:Z')
+
+        // Claim 3 and 4 KPIs without refund
+        for (kpiIndex = 2; kpiIndex <= 3; ++kpiIndex) {
+          await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+
+          // User claim tokens
+          await vesting.connect(user).withdraw(IDOToken.address, ido.address)
+          await vesting.connect(user2).withdraw(IDOToken.address, ido.address)
+          claimedTokens = await IDOToken.balanceOf(user.address)
+          totalClaimedInIDOToken = claimedTokens
+
+          refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
+          expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalRefundRequestedInToken)
+          expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(0)
+          expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(0)
+          expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(0)
+          expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(0)
+
+          vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
+          expect(vestingInfo.refundInfo.total).to.eq(userAmountInIDOToken)
+          expect(vestingInfo.refundInfo.totalClaimed).to.eq(totalClaimedInIDOToken)
+          expect(vestingInfo.refundInfo.withdrawableAmount).to.eq(0)
+
+          await expect(vesting.connect(user).withdraw(IDOToken.address, ido.address)).to.be.revertedWith('BRV:Z')
+          await expect(vesting.connect(user2).withdraw(IDOToken.address, ido.address)).to.be.revertedWith('BRV:Z')
+        }
+
+        // Refund 4 KPI
+        kpiIndex = 3
+        percentInBP = KPIs[kpiIndex].percentInBP - KPIs[kpiIndex - 1].percentInBP
+        const expectedRefund4 = userAmountInIDOToken.mul(percentInBP).div(bpPrecision)
+        await IDOToken.connect(user).approve(refund.address, expectedRefund4)
+        await IDOToken.connect(user2).approve(refund.address, expectedRefund4)
+
+        await expect(
+          refund.connect(user).requestRefund(IDOToken.address, ido.address, expectedRefund4, kpiIndex, zeroData)
+        )
+          .to.emit(refund, 'RequestRefund')
+          .withArgs(
+            IDOToken.address,
+            ido.address,
+            user.address,
+            expectedRefund4,
+            expectedRefund4,
+            expectedRefund4,
+            kpiIndex
+          )
+        await expect(
+          refund.connect(user2).requestRefund(IDOToken.address, ido.address, expectedRefund4, kpiIndex, zeroData)
+        )
+          .to.emit(refund, 'RequestRefund')
+          .withArgs(
+            IDOToken.address,
+            ido.address,
+            user2.address,
+            expectedRefund4,
+            expectedRefund4,
+            expectedRefund4,
+            kpiIndex
+          )
+
+        totalRefundRequestedInToken = totalRefundRequestedInToken.add(expectedRefund4)
+        const expectedRefund4WithMultiplier = expectedRefund4.mul(KPIs[kpiIndex].multiplierInBP).div(bpPrecision)
+        const totalRefundRequestedBy4KPI = expectedRefund4.add(expectedRefund4)
+        // Tokens for the 3rd KPI
+        const tokensFor3KPI = userAmountInIDOToken.mul(KPIs[2].percentInBP - KPIs[1].percentInBP).div(bpPrecision)
+        expect(await IDOToken.balanceOf(user.address)).to.eq(tokensFor3KPI)
+
+        // Check info
+        refundInfo = await refund.infoOf(IDOToken.address, ido.address, user.address)
+        expect(refundInfo.accountInfoOf.refundRequestedInToken).to.eq(totalRefundRequestedInToken)
+        expect(refundInfo.accountInfoOf.claimedRefundRequestedInToken).to.eq(expectedRefund4)
+        expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(expectedRefund4)
+        expect(refundInfo.accountInfoOf.refundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(
+          expectedRefund4WithMultiplier
+        )
+        expect(refundInfo.totalRefundRequestedByKPI[kpiIndex]).to.eq(totalRefundRequestedBy4KPI)
+
+        // Vesting info
+        vestingInfo = await vesting.infoOf(IDOToken.address, ido.address, user.address)
+        expect(vestingInfo.refundInfo.total).to.eq(userAmountInIDOToken)
+        expect(vestingInfo.refundInfo.totalClaimed).to.eq(totalClaimedInIDOToken)
+        expect(vestingInfo.refundInfo.withdrawableAmount).to.eq(0)
+      })
+    })
+
+    describe('deflationary ido token', () => {
+      let IDODeflationaryToken: TestDeflationaryERC20
+
+      const deflationaryInBP = 500
+
+      beforeEach(async () => {
+        KPIs = [
+          {
+            dateRequestStart: tgeDate,
+            dateRequestEnd: tgeDate + days(1),
+            percentInBP: vestingPercentage,
+            multiplierInBP: bpPrecision,
+            isFullRefund: true,
+            isRefundable: true,
+            isClaimable: true
+          },
+          {
+            dateRequestStart: vestingDates[0],
+            dateRequestEnd: vestingDates[0] + days(1),
+            percentInBP: vestingPercentage * 2,
+            multiplierInBP: bpPrecision,
+            isFullRefund: false,
+            isRefundable: true,
+            isClaimable: true
+          },
+          {
+            dateRequestStart: vestingDates[1],
+            dateRequestEnd: vestingDates[1] + days(1),
+            percentInBP: vestingPercentage * 3,
+            multiplierInBP: bpPrecision,
+            isFullRefund: false,
+            isRefundable: true,
+            isClaimable: true
+          },
+          {
+            dateRequestStart: vestingDates[2],
+            dateRequestEnd: vestingDates[2] + days(1),
+            percentInBP: bpPrecision,
+            multiplierInBP: bpPrecision,
+            isFullRefund: false,
+            isRefundable: true,
+            isClaimable: true
+          }
+        ]
+
+        IDODeflationaryToken = await new TestDeflationaryERC20__factory(owner).deploy(
+          'IDO token',
+          'IDO_TKN',
+          expandTo18Decimals(1_000_000),
+          deflationaryInBP
+        )
+
+        // Vesting
+        vesting = await new OneChainDatesRefundVesting__factory(owner).deploy()
+        const initializeVestingInfo: InitializeVestingInfo = {
+          token: IDODeflationaryToken.address,
+          identifier: ido.address,
+          refund: ethers.constants.AddressZero
+        }
+
+        proxy = await new ERC1967Proxy__factory(owner).deploy(
+          vesting.address,
+          vesting.interface.encodeFunctionData('initialize', [
+            registry.address,
+            initializeVestingInfo,
+            ethers.utils.defaultAbiCoder.encode(
+              ['uint64', 'uint64', 'uint32', 'uint32[]'],
+              [bpPrecision, tgePercentage, tgeDate, vestingDates]
+            )
+          ])
+        )
+        vesting = vesting.attach(proxy.address)
+
+        // Refund requester
+        refund = await new OneChainRefundRequester__factory(owner).deploy()
+        const initializeRefundInfo: InitializeRefundInfo = {
+          token: IDODeflationaryToken.address,
+          identifier: ido.address,
+          vesting: vesting.address,
+          projectFundsHolder: owner.address,
+          KPIs: KPIs,
+          bpPrecision: BP
+        }
+
+        proxy = await new ERC1967Proxy__factory(owner).deploy(
+          refund.address,
+          refund.interface.encodeFunctionData('initialize', [
+            registry.address,
+            initializeRefundInfo,
+            ethers.utils.defaultAbiCoder.encode([], [])
+          ])
+        )
+        refund = refund.attach(proxy.address)
+
+        await IDODeflationaryToken.transfer(vesting.address, expandTo18Decimals(1_000_000))
+        await vesting.setRefund(IDODeflationaryToken.address, ido.address, refund.address)
+
+        await ido.addAccount(user2.address, userAmountInIDOToken, referrer.address, defaultReferrer.address)
+      })
+
+      it('deflationary ido token:claim:refund unclaimed:refund claimed:claimed next vesting tokens:refund last KPI', async () => {
+        let kpiIndex = 0
+        await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+
+        let userBalanceInToken = await IDODeflationaryToken.balanceOf(user.address)
+        expect(userBalanceInToken).to.eq(0)
+
+        // User claim tokens
+        await vesting.connect(user).withdraw(IDODeflationaryToken.address, ido.address)
+        let totalClaimedInIDOToken = userAmountInIDOToken.mul(vestingPercentage).div(bpPrecision)
+        const expectedVestingFullAmountInToken = userAmountInIDOToken.mul(KPIs[kpiIndex].percentInBP).div(bpPrecision)
+        const expectedVestingAmountInToken = expectedVestingFullAmountInToken.sub(
+          expectedVestingFullAmountInToken.mul(deflationaryInBP).div(bpPrecision)
+        )
+
+        userBalanceInToken = await IDODeflationaryToken.balanceOf(user.address)
+        expect(userBalanceInToken).to.eq(expectedVestingAmountInToken)
+
+        kpiIndex = 1
+        await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+
+        let expectedRefundFullAmountInToken = userAmountInIDOToken
+          .mul(KPIs[kpiIndex].percentInBP - KPIs[kpiIndex - 1].percentInBP)
+          .div(bpPrecision)
+        let expectedRefundInToken = expectedRefundFullAmountInToken.sub(
+          expectedRefundFullAmountInToken.mul(deflationaryInBP).div(bpPrecision)
+        )
+
+        await expect(
+          refund.connect(user).requestRefund(IDODeflationaryToken.address, ido.address, 0, kpiIndex, zeroData)
+        )
+          .to.emit(refund, 'RequestRefund')
+          .withArgs(
+            IDODeflationaryToken.address,
+            ido.address,
+            user.address,
+            expectedRefundFullAmountInToken,
+            expectedRefundFullAmountInToken,
+            0,
+            kpiIndex
+          )
+        await expect(vesting.connect(user).withdraw(IDODeflationaryToken.address, ido.address)).to.be.revertedWith(
+          'BRV:Z'
+        )
+        const newUserBalanceInToken = await IDODeflationaryToken.balanceOf(user.address)
+        expect(newUserBalanceInToken).to.eq(userBalanceInToken)
+
+        kpiIndex = 2
+        await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+
+        await IDODeflationaryToken.connect(user).approve(refund.address, expectedRefundFullAmountInToken)
+        expectedRefundFullAmountInToken = userAmountInIDOToken
+          .mul(KPIs[kpiIndex].percentInBP - KPIs[kpiIndex - 1].percentInBP)
+          .div(bpPrecision)
+        expectedRefundInToken = expectedRefundFullAmountInToken.sub(
+          expectedRefundFullAmountInToken.mul(deflationaryInBP).div(bpPrecision)
+        )
+
+        await expect(
+          refund.connect(user).requestRefund(IDODeflationaryToken.address, ido.address, 0, kpiIndex, zeroData)
+        )
+          .to.emit(refund, 'RequestRefund')
+          .withArgs(
+            IDODeflationaryToken.address,
+            ido.address,
+            user.address,
+            expectedRefundFullAmountInToken,
+            expectedRefundFullAmountInToken,
+            0,
+            kpiIndex
+          )
+
+        // Refund info
+        const refundInfo = await refund.infoOf(IDODeflationaryToken.address, ido.address, user.address)
+        expect(refundInfo.accountInfoOf.actualRefundRequestedWithMultiplierByKPIInToken[2]).to.eq(
+          expectedRefundFullAmountInToken
+        )
+        expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[2]).to.eq(expectedRefundFullAmountInToken)
+
+        kpiIndex = 3
+        await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+        // User claim tokens
+        await vesting.connect(user).withdraw(IDODeflationaryToken.address, ido.address)
+        totalClaimedInIDOToken = totalClaimedInIDOToken.add(
+          userAmountInIDOToken.mul(vestingPercentage).div(bpPrecision)
+        )
+
+        userBalanceInToken = await IDODeflationaryToken.balanceOf(user.address)
+
+        await IDODeflationaryToken.connect(user).approve(refund.address, expectedRefundFullAmountInToken)
+        expectedRefundFullAmountInToken = userAmountInIDOToken
+          .mul(KPIs[kpiIndex].percentInBP - KPIs[kpiIndex - 1].percentInBP)
+          .div(bpPrecision)
+        expectedRefundInToken = expectedRefundFullAmountInToken.sub(
+          expectedRefundFullAmountInToken.mul(deflationaryInBP).div(bpPrecision)
+        )
+
+        // Refund last KPI
+        await expect(
+          refund
+            .connect(user)
+            .requestRefund(
+              IDODeflationaryToken.address,
+              ido.address,
+              expectedRefundFullAmountInToken,
+              kpiIndex,
+              zeroData
+            )
+        )
+          .to.emit(refund, 'RequestRefund')
+          .withArgs(
+            IDODeflationaryToken.address,
+            ido.address,
+            user.address,
+            expectedRefundFullAmountInToken,
+            expectedRefundInToken,
+            expectedRefundFullAmountInToken,
+            kpiIndex
+          )
+
+        await expect(vesting.connect(user).withdraw(IDODeflationaryToken.address, ido.address)).to.be.revertedWith(
+          'BRV:Z'
+        )
+        const userBalanceAfterLastRefundInToken = await IDODeflationaryToken.balanceOf(user.address)
+        expect(userBalanceAfterLastRefundInToken).to.eq(userBalanceInToken.sub(expectedRefundFullAmountInToken))
+
+        // Vesting info
+        const vestingInfo = await vesting.infoOf(IDODeflationaryToken.address, ido.address, user.address)
+        expect(vestingInfo.refundInfo.total).to.eq(userAmountInIDOToken)
+        expect(vestingInfo.refundInfo.totalClaimed).to.eq(totalClaimedInIDOToken)
+        expect(vestingInfo.refundInfo.withdrawableAmount).to.eq(0)
+      })
+
+      it('deflationary ido token:claim:refund claimed:claimed next vesting tokens:refund last KPI', async () => {
+        let kpiIndex = 0
+        await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+
+        let userBalanceInToken = await IDODeflationaryToken.balanceOf(user.address)
+        expect(userBalanceInToken).to.eq(0)
+
+        // User claim tokens
+        await vesting.connect(user).withdraw(IDODeflationaryToken.address, ido.address)
+        const expectedVestingFullAmountInToken = userAmountInIDOToken.mul(KPIs[kpiIndex].percentInBP).div(bpPrecision)
+        const expectedVestingAmountInToken = expectedVestingFullAmountInToken.sub(
+          expectedVestingFullAmountInToken.mul(deflationaryInBP).div(bpPrecision)
+        )
+
+        userBalanceInToken = await IDODeflationaryToken.balanceOf(user.address)
+        expect(userBalanceInToken).to.eq(expectedVestingAmountInToken)
+
+        kpiIndex = 1
+        await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+        // User claim tokens
+        await vesting.connect(user).withdraw(IDODeflationaryToken.address, ido.address)
+
+        let expectedRefundFullAmountInToken = userAmountInIDOToken
+          .mul(KPIs[kpiIndex].percentInBP - KPIs[kpiIndex - 1].percentInBP)
+          .div(bpPrecision)
+        const broughtTokens = expectedRefundFullAmountInToken.div(2)
+
+        userBalanceInToken = await IDODeflationaryToken.balanceOf(user.address)
+
+        await IDODeflationaryToken.connect(user).approve(refund.address, userBalanceInToken)
+
+        await expect(
+          refund
+            .connect(user)
+            .requestRefund(IDODeflationaryToken.address, ido.address, broughtTokens, kpiIndex, zeroData)
+        )
+          .to.emit(refund, 'RequestRefund')
+          .withArgs(
+            IDODeflationaryToken.address,
+            ido.address,
+            user.address,
+            broughtTokens,
+            broughtTokens.sub(broughtTokens.mul(deflationaryInBP).div(bpPrecision)),
+            broughtTokens,
+            kpiIndex
+          )
+        await expect(vesting.connect(user).withdraw(IDODeflationaryToken.address, ido.address)).to.be.revertedWith(
+          'BRV:Z'
+        )
+
+        kpiIndex = 2
+        await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+        // User claim tokens
+        await vesting.connect(user).withdraw(IDODeflationaryToken.address, ido.address)
+
+        kpiIndex = 3
+        await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+        // User claim tokens
+        await vesting.connect(user).withdraw(IDODeflationaryToken.address, ido.address)
+
+        userBalanceInToken = await IDODeflationaryToken.balanceOf(user.address)
+
+        expectedRefundFullAmountInToken = userAmountInIDOToken
+          .mul(KPIs[kpiIndex].percentInBP - KPIs[kpiIndex - 1].percentInBP)
+          .div(bpPrecision)
+        const expectedRefundInToken = expectedRefundFullAmountInToken.sub(
+          expectedRefundFullAmountInToken.mul(deflationaryInBP).div(bpPrecision)
+        )
+
+        // Refund last KPI
+        await expect(
+          refund
+            .connect(user)
+            .requestRefund(
+              IDODeflationaryToken.address,
+              ido.address,
+              expectedRefundFullAmountInToken,
+              kpiIndex,
+              zeroData
+            )
+        )
+          .to.emit(refund, 'RequestRefund')
+          .withArgs(
+            IDODeflationaryToken.address,
+            ido.address,
+            user.address,
+            expectedRefundFullAmountInToken,
+            expectedRefundInToken,
+            expectedRefundFullAmountInToken,
+            kpiIndex
+          )
+
+        await expect(vesting.connect(user).withdraw(IDODeflationaryToken.address, ido.address)).to.be.revertedWith(
+          'BRV:Z'
+        )
+        const userBalanceAfterRefundInToken = await IDODeflationaryToken.balanceOf(user.address)
+        expect(userBalanceAfterRefundInToken).to.eq(userBalanceInToken.sub(expectedRefundFullAmountInToken))
+
+        // Vesting info
+        const vestingInfo = await vesting.infoOf(IDODeflationaryToken.address, ido.address, user.address)
+        expect(vestingInfo.refundInfo.total).to.eq(userAmountInIDOToken)
+        expect(vestingInfo.refundInfo.totalClaimed).to.eq(userAmountInIDOToken)
+        expect(vestingInfo.refundInfo.withdrawableAmount).to.eq(0)
+
+        // Refund info
+        const refundInfo = await refund.infoOf(IDODeflationaryToken.address, ido.address, user.address)
+        expect(refundInfo.accountInfoOf.actualRefundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(
+          expectedRefundInToken
+        )
+        expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(expectedRefundFullAmountInToken)
+      })
+
+      it('deflationary ido token:claim:refund unclaimed + claimed in one tx:claimed next vesting tokens:refund last KPI', async () => {
+        let userBalanceInToken = await IDODeflationaryToken.balanceOf(user.address)
+        expect(userBalanceInToken).to.eq(0)
+
+        let kpiIndex = 1
+        await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+        // User claim tokens
+        await vesting.connect(user).withdraw(IDODeflationaryToken.address, ido.address)
+
+        let expectedRefundFullAmountInToken = userAmountInIDOToken
+          .mul(KPIs[kpiIndex].percentInBP - KPIs[kpiIndex - 1].percentInBP)
+          .div(bpPrecision)
+
+        userBalanceInToken = await IDODeflationaryToken.balanceOf(user.address)
+
+        await IDODeflationaryToken.connect(user).approve(refund.address, expectedRefundFullAmountInToken)
+
+        await expect(
+          refund
+            .connect(user)
+            .requestRefund(
+              IDODeflationaryToken.address,
+              ido.address,
+              expectedRefundFullAmountInToken,
+              kpiIndex,
+              zeroData
+            )
+        )
+          .to.emit(refund, 'RequestRefund')
+          .withArgs(
+            IDODeflationaryToken.address,
+            ido.address,
+            user.address,
+            expectedRefundFullAmountInToken,
+            expectedRefundFullAmountInToken.sub(expectedRefundFullAmountInToken.mul(deflationaryInBP).div(bpPrecision)),
+            expectedRefundFullAmountInToken,
+            kpiIndex
+          )
+        await expect(vesting.connect(user).withdraw(IDODeflationaryToken.address, ido.address)).to.be.revertedWith(
+          'BRV:Z'
+        )
+
+        kpiIndex = 3
+        await mineBlockAtTime(ethers.provider, KPIs[kpiIndex].dateRequestStart)
+        // User claim tokens
+        await vesting.connect(user).withdraw(IDODeflationaryToken.address, ido.address)
+
+        userBalanceInToken = await IDODeflationaryToken.balanceOf(user.address)
+
+        expectedRefundFullAmountInToken = userAmountInIDOToken
+          .mul(KPIs[kpiIndex].percentInBP - KPIs[kpiIndex - 1].percentInBP)
+          .div(bpPrecision)
+        const expectedRefundInToken = expectedRefundFullAmountInToken.sub(
+          expectedRefundFullAmountInToken.mul(deflationaryInBP).div(bpPrecision)
+        )
+
+        await IDODeflationaryToken.connect(user).approve(refund.address, expectedRefundFullAmountInToken)
+
+        // Refund last KPI
+        await expect(
+          refund
+            .connect(user)
+            .requestRefund(
+              IDODeflationaryToken.address,
+              ido.address,
+              expectedRefundFullAmountInToken,
+              kpiIndex,
+              zeroData
+            )
+        )
+          .to.emit(refund, 'RequestRefund')
+          .withArgs(
+            IDODeflationaryToken.address,
+            ido.address,
+            user.address,
+            expectedRefundFullAmountInToken,
+            expectedRefundInToken,
+            expectedRefundFullAmountInToken,
+            kpiIndex
+          )
+
+        await expect(vesting.connect(user).withdraw(IDODeflationaryToken.address, ido.address)).to.be.revertedWith(
+          'BRV:Z'
+        )
+        const userBalanceAfterRefundInToken = await IDODeflationaryToken.balanceOf(user.address)
+        expect(userBalanceAfterRefundInToken).to.eq(userBalanceInToken.sub(expectedRefundFullAmountInToken))
+
+        // Vesting info
+        const vestingInfo = await vesting.infoOf(IDODeflationaryToken.address, ido.address, user.address)
+        expect(vestingInfo.refundInfo.total).to.eq(userAmountInIDOToken)
+        expect(vestingInfo.refundInfo.totalClaimed).to.eq(userAmountInIDOToken)
+        expect(vestingInfo.refundInfo.withdrawableAmount).to.eq(0)
+
+        // Refund info
+        const refundInfo = await refund.infoOf(IDODeflationaryToken.address, ido.address, user.address)
+        expect(refundInfo.accountInfoOf.actualRefundRequestedWithMultiplierByKPIInToken[kpiIndex]).to.eq(
+          expectedRefundInToken
+        )
+        expect(refundInfo.accountInfoOf.refundRequestedByKPIInToken[kpiIndex]).to.eq(expectedRefundFullAmountInToken)
       })
     })
   })

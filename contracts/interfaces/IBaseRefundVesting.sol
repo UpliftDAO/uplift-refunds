@@ -43,5 +43,11 @@ interface IBaseRefundVesting {
     ) external view returns (uint256);
 
     event SetRefund(address indexed token, address indexed identifier, address indexed refund);
-    event Withdraw(address indexed token, address indexed identifier, address indexed account, uint256 amount);
+    event Withdraw(
+        address indexed token,
+        address indexed identifier,
+        address indexed account,
+        uint256 amount,
+        uint256 receivedAmount
+    );
 }

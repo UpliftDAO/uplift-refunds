@@ -12,118 +12,144 @@ import { BaseRefundClaimer } from "./BaseRefundClaimer.sol";
  * @notice One-chain claimer, gets data from refund requester directly.
  */
 contract OneChainRefundClaimer is BaseRefundClaimer, IOneChainRefundClaimer {
-    // [token][identifier]
-    mapping(address => mapping(address => OneChainRefundInfo)) public override requesterInfoOf;
+    // [IDOToken][identifier]
+    mapping(address => mapping(address => address)) public override refundRequesterOf;
 
     /**
      * @inheritdoc BaseRefundClaimer
      */
     function initialize(
         address registry_,
-        address token_,
+        address IDOToken_,
         address identifier_,
         bytes calldata payload_
     ) external virtual override initializer {
         _baseInitialize(registry_);
-        _oneChainInitialize(token_, identifier_, payload_);
+        _oneChainInitialize(IDOToken_, identifier_, payload_);
+    }
+
+    /**
+     * @inheritdoc BaseRefundClaimer
+     */
+    function addRefundClaim(
+        address IDOToken_,
+        address identifier_,
+        bytes calldata payload_
+    ) external virtual override onlyRole(DEFAULT_ADMIN_ROLE) {
+        _oneChainInitialize(IDOToken_, identifier_, payload_);
     }
 
     /**
      * @inheritdoc IOneChainRefundClaimer
      */
     function setRefundRequester(
-        address token_,
+        address IDOToken_,
         address identifier_,
         address refundRequester_
     ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
-        _setRefundRequester(token_, identifier_, refundRequester_);
-    }
-
-    /**
-     * @inheritdoc IOneChainRefundClaimer
-     */
-    function setIDOToken(
-        address token_,
-        address identifier_,
-        address IDOToken_
-    ) external override onlyRole(DEFAULT_ADMIN_ROLE) {
-        _setIDOToken(token_, identifier_, IDOToken_);
-    }
-
-    /**
-     * @inheritdoc BaseRefundClaimer
-     */
-    function _getRefundAmountInIDOToken(
-        address token_,
-        address identifier_,
-        address account_,
-        bytes calldata
-    ) internal view override returns (uint256 amount) {
-        OneChainRefundInfo memory requesterInfo = requesterInfoOf[token_][identifier_];
-        IBaseRefundRequester.ReturnRefundInfo memory info = IBaseRefundRequester(requesterInfo.refundRequester).infoOf(
-            requesterInfo.IDOToken,
-            identifier_,
-            account_
-        );
-        amount = info.accountInfoOf.refundRequestedWithMultiplierInToken;
+        _setRefundRequester(IDOToken_, identifier_, refundRequester_);
     }
 
     /**
      * @inheritdoc BaseRefundClaimer
      */
     function _isValidForRefund(
-        address token_,
+        address IDOToken_,
         address identifier_,
         address,
+        uint8[] calldata,
         bytes calldata
     ) internal view override returns (bool) {
-        return requesterInfoOf[token_][identifier_].refundRequester != address(0);
+        return refundRequesterOf[IDOToken_][identifier_] != address(0);
+    }
+
+    /**
+     * @inheritdoc BaseRefundClaimer
+     */
+    function _getRefundAmountsInIDOToken(
+        address IDOToken_,
+        address identifier_,
+        address account_,
+        uint8[] calldata KPIIndices_,
+        bytes calldata
+    ) internal view override returns (uint256 amountTotalInIDOToken, uint256[] memory amountsByKPIInIDOToken) {
+        IBaseRefundRequester.ReturnRefundInfo memory info = IBaseRefundRequester(
+            refundRequesterOf[IDOToken_][identifier_]
+        ).infoOf(IDOToken_, identifier_, account_);
+        uint256 length = KPIIndices_.length;
+        amountsByKPIInIDOToken = new uint256[](length);
+        for (uint256 i; i < length; ++i) {
+            uint8 KPIIndex = KPIIndices_[i];
+            uint256 amountByKPIInIDOToken = _getRefundAmountByKPIInIDOToken(
+                IDOToken_,
+                identifier_,
+                account_,
+                KPIIndex,
+                info.accountInfoOf.actualRefundRequestedWithMultiplierByKPIInToken[KPIIndex],
+                info.KPIs[KPIIndex].isClaimable
+            );
+            if (amountByKPIInIDOToken > 0) {
+                amountsByKPIInIDOToken[i] = amountByKPIInIDOToken;
+                amountTotalInIDOToken += amountByKPIInIDOToken;
+            }
+        }
     }
 
     /**
      * @notice Initialize function for one-chain claimer
-     * @param token_ - buy token, can't be zero address
+     * @param IDOToken_ - distribution token (which user bought in the IDO)
      * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
-     * @param payload_ - custom data (for one chain holds decoded (refundRequester and IDOToken))
+     * @param payload_ - custom data (for one chain holds decoded refundRequester)
      */
     function _oneChainInitialize(
-        address token_,
+        address IDOToken_,
         address identifier_,
         bytes calldata payload_
     ) private {
-        (address refundRequester_, address IDOToken_) = abi.decode(payload_, (address, address));
-        _setRefundRequester(token_, identifier_, refundRequester_);
-        _setIDOToken(token_, identifier_, IDOToken_);
+        _checkIdentifier(identifier_);
+        address refundRequester_ = abi.decode(payload_, (address));
+        _setRefundRequester(IDOToken_, identifier_, refundRequester_);
     }
 
     /**
      * @notice Set refund requester address (OneChainRefundRequester contract)
-     * @param token_ - buy token, can't be zero address
+     * @param IDOToken_ - distribution token (which user bought in the IDO)
      * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
      * @param refundRequester_ - new refund requester address (OneChainRefundRequester contract)
      */
     function _setRefundRequester(
-        address token_,
+        address IDOToken_,
         address identifier_,
         address refundRequester_
     ) private {
         require(IERC165(refundRequester_).supportsInterface(type(IBaseRefundRequester).interfaceId), "OCRC:I");
-        requesterInfoOf[token_][identifier_].refundRequester = refundRequester_;
-        emit SetRefundRequester(token_, identifier_, refundRequester_);
+        refundRequesterOf[IDOToken_][identifier_] = refundRequester_;
+        emit SetRefundRequester(IDOToken_, identifier_, refundRequester_);
     }
 
     /**
-     * @notice Set IDO token address
-     * @param token_ - buy token, can't be zero address
+     * @notice Gets refund amount for one KPI in IDO tokens
+     * @param IDOToken_ - distribution token (which user bought in the IDO)
      * @param identifier_ - unique identifier for refund, can be zero address (for one-chain refund it will be IDO address)
-     * @param IDOToken_ - new IDO token address
+     * @param account_ - user's address
+     * @param KPIIndex_ - KPI Index
+     * @param refundRequestedWithMultiplierInIDOToken_ - amount with multiplier requested by user in IDO token
+     * @param isClaimable_ - is claimable KPI
+     * @return amountByKPIInIDOToken amount by KPI in IDO tokens
      */
-    function _setIDOToken(
-        address token_,
+    function _getRefundAmountByKPIInIDOToken(
+        address IDOToken_,
         address identifier_,
-        address IDOToken_
-    ) private {
-        requesterInfoOf[token_][identifier_].IDOToken = IDOToken_;
-        emit SetIDOToken(token_, identifier_, IDOToken_);
+        address account_,
+        uint8 KPIIndex_,
+        uint256 refundRequestedWithMultiplierInIDOToken_,
+        bool isClaimable_
+    ) private view returns (uint256 amountByKPIInIDOToken) {
+        uint256 refundClaimedByKPIInIDOToken = refundClaimedByKPIInIDOToken[IDOToken_][identifier_][account_][
+            KPIIndex_
+        ];
+        if (isClaimable_ && refundRequestedWithMultiplierInIDOToken_ > refundClaimedByKPIInIDOToken) {
+            amountByKPIInIDOToken = refundRequestedWithMultiplierInIDOToken_ - refundClaimedByKPIInIDOToken;
+        }
     }
 }
