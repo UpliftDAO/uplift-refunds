@@ -20,6 +20,7 @@ library DatesVestingLibrary {
         uint32[] memory vestingDates_
     ) internal {
         require(tgeDate_ > 0, "DVL:Z");
+        require(bpPrecision_ >= tgePercentage_, "DVL:I");
         for (uint256 i; i < vestingDates_.length; ++i) {
             require(i > 0 ? vestingDates_[i] > vestingDates_[i - 1] : vestingDates_[0] > tgeDate_, "DVL:I");
         }
